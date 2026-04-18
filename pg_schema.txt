@@ -1,0 +1,15 @@
+﻿     column_name     |          data_type          
+---------------------+-----------------------------
+ id                  | integer
+ product_id          | integer
+ change_amount       | integer
+ reason              | USER-DEFINED
+ compensation_amount | double precision
+ user_id             | integer
+ timestamp           | timestamp without time zone
+ status              | character varying
+ note                | text
+ image_url           | text
+ user_name           | character varying
+(11 rows)
+

@@ -1,0 +1,196 @@
+.container {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--foreground);
+    margin-bottom: 0.25rem;
+}
+
+.subtitle {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
+.addButton {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+/* Filter Section */
+.filterSection {
+    display: flex;
+    gap: 0.75rem;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+}
+
+.filterBtn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    background-color: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    white-space: nowrap;
+    transition: var(--transition);
+}
+
+.filterBtn:hover {
+    background-color: var(--surface-hover);
+    color: var(--foreground);
+}
+
+.filterBtn.active {
+    background-color: var(--surface-hover);
+    color: var(--foreground);
+    border-color: var(--primary);
+    font-weight: 600;
+}
+
+.colorDot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+/* Grid Calendar */
+.calendarCard {
+    overflow: auto;
+    max-height: calc(100vh - 220px);
+}
+
+.gridContainer {
+    display: grid;
+    /* Auto-fit columns based on the number of filtered courts. 1st column is fixed width for Time */
+    grid-template-columns: 120px repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.cell {
+    padding: 1rem;
+    border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    min-height: 80px;
+}
+
+.headerCell {
+    background-color: var(--surface);
+    font-weight: 600;
+    text-align: center;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+}
+
+.cornerCell {
+    z-index: 3;
+    left: 0;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
+.timeCell {
+    background-color: var(--surface);
+    font-weight: 600;
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    text-align: center;
+    color: var(--foreground);
+}
+
+.timeEnd {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-top: 0.25rem;
+}
+
+/* Booking Slots */
+.bookingSlot {
+    height: 100%;
+    border-left: 4px solid var(--primary);
+    /* Overridden inline by court color */
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.bookingSlot:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-sm);
+}
+
+.bookingName {
+    font-weight: 600;
+    font-size: 0.875rem;
+    margin-bottom: 0.25rem;
+    color: var(--foreground);
+}
+
+.bookingStatus {
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.emptySlot {
+    height: 100%;
+    border: 1px dashed transparent;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: transparent;
+    transition: all 0.2s;
+    position: relative;
+}
+
+.emptySlot:hover {
+    border-color: var(--border);
+    background-color: var(--surface-hover);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.quickAdd {
+    position: absolute;
+    opacity: 0;
+    font-size: 1.5rem;
+    font-weight: 300;
+    transition: opacity 0.2s;
+}
+
+.emptySlot:hover .quickAdd {
+    opacity: 1;
+}
+
+.emptySlot:hover span {
+    opacity: 0;
+}

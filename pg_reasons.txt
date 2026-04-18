@@ -1,0 +1,9 @@
+﻿     reason      
+-----------------
+ SALE
+ NATURAL_DAMAGE
+ EXPIRED
+ CUSTOMER_DAMAGE
+ STOCK_IN
+(5 rows)
+

@@ -1,0 +1,5 @@
+﻿                       enum_range                       
+--------------------------------------------------------
+ {SALE,EXPIRED,NATURAL_DAMAGE,CUSTOMER_DAMAGE,STOCK_IN}
+(1 row)
+
