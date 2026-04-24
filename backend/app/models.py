@@ -154,6 +154,12 @@ class Booking(Base):
     payment_status = Column(Enum(PaymentStatus, native_enum=False, length=50), default=PaymentStatus.UNPAID)
     note = Column(String(500), nullable=True)
     is_deleted = Column(Boolean, default=False)
+    # --- Online Booking Fields ---
+    expires_at = Column(DateTime, nullable=True)          # Thời hạn giữ chỗ (15 phút)
+    payment_ref = Column(String(50), nullable=True, index=True)  # Mã nội dung CK duy nhất
+    proof_image_url = Column(String(255), nullable=True)  # Ảnh minh chứng của khách
+    is_online = Column(Boolean, default=False)            # True = đặt từ web/app khách
+    price = Column(Float, nullable=True)                  # Giá của ca này
 
     user = relationship("User", back_populates="bookings")
     court = relationship("Court", back_populates="bookings")
@@ -224,6 +230,21 @@ class BankSettings(Base):
     account_number = Column(String(50), nullable=False)  # Số tài khoản
     account_name = Column(String(100), nullable=False)   # Tên chủ TK
     is_active = Column(Boolean, default=True)
+
+
+class WebhookLog(Base):
+    """Lịch sử callback webhook từ Casso/SePay."""
+    __tablename__ = "webhook_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source = Column(String(50), nullable=False, default="casso")  # 'casso' | 'sepay' | 'manual'
+    payment_ref = Column(String(100), nullable=True)  # Nội dung CK được match
+    amount = Column(Float, nullable=True)             # Số tiền nhận được
+    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="SET NULL"), nullable=True)
+    matched = Column(Boolean, default=False)          # True nếu match thành công
+    raw_data = Column(Text, nullable=True)            # JSON raw từ webhook
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
 
 
 class Transaction(Base):

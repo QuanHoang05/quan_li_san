@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Plus, X, Ban, ChevronLeft, ChevronRight, List, Edit, Trash2, ShieldAlert, DollarSign, History, BarChart2, CheckCircle, Trash, QrCode, Banknote } from 'lucide-react';
+import { Plus, X, Ban, ChevronLeft, ChevronRight, List, Edit, Trash2, ShieldAlert, DollarSign, History, BarChart2, CheckCircle, Trash, QrCode, Banknote, Globe, Eye, ThumbsUp } from 'lucide-react';
 import { api, BankSettings } from '@/lib/api';
 import toast from 'react-hot-toast';
 import PricingModal from '@/components/court/PricingModal';
@@ -52,6 +52,7 @@ export default function BookingsShiftPage() {
     const [historyModal, setHistoryModal] = useState<{open: boolean, court: any | null}>({open: false, court: null});
     const [statsModal, setStatsModal] = useState(false);
     const [bankSettings, setBankSettings] = useState<BankSettings | null>(null);
+    const [proofModal, setProofModal] = useState<{open: boolean, url: string | null, bookingId: number | null}>({open: false, url: null, bookingId: null});
     
     // Forms
     const [bookingForm, setBookingForm] = useState({
@@ -393,7 +394,14 @@ export default function BookingsShiftPage() {
                                     >
                                         <div className={`absolute top-0 left-0 w-1 h-full ${pColor}`}></div>
                                         <div className="flex justify-between items-start w-full ml-1">
-                                            <span className="font-bold text-slate-800 text-[15px]">{shift.start} - {shift.end}</span>
+                                            <div className="flex flex-col gap-1">
+                                                <span className="font-bold text-slate-800 text-[15px]">{shift.start} - {shift.end}</span>
+                                                {status.data.is_online && (
+                                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
+                                                        <Globe size={9}/> Online
+                                                    </span>
+                                                )}
+                                            </div>
                                             <StatusBadge status={status.data.payment_status}/>
                                         </div>
                                         <div className="flex flex-col mt-3 gap-1.5 ml-1">
@@ -736,8 +744,9 @@ export default function BookingsShiftPage() {
                 // Build QR URL
                 const orderRef = `SAN-${b.id}-${Date.now().toString().slice(-4)}`;
                 const qrNote = `${orderRef} ${b.guest_name || 'Khach vang lai'} ${court?.name || ''}`.slice(0, 50);
+                const safeBankCode = bankSettings?.bank_code === 'MBB' ? 'MB' : (bankSettings?.bank_code === 'VTB' ? 'ICB' : bankSettings?.bank_code);
                 const qrUrl = bankSettings
-                    ? `https://img.vietqr.io/image/${bankSettings.bank_code}-${bankSettings.account_number}-compact2.png?amount=${Math.round(groupRemaining)}&addInfo=${encodeURIComponent(qrNote)}&accountName=${encodeURIComponent(bankSettings.account_name)}`
+                    ? `https://img.vietqr.io/image/${safeBankCode}-${bankSettings.account_number}-compact2.png?amount=${Math.round(groupRemaining)}&addInfo=${encodeURIComponent(qrNote)}&accountName=${encodeURIComponent(bankSettings.account_name)}`
                     : null;
 
                 return (
@@ -820,9 +829,45 @@ export default function BookingsShiftPage() {
                                     )}
                                 </div>
 
+                                {/* Proof image section for online bookings */}
+                                {b.proof_image_url && (
+                                    <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
+                                        <div className="text-xs font-bold text-indigo-700 mb-2 flex items-center gap-1.5">
+                                            <Eye size={12}/> Ảnh minh chứng của khách
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            <img
+                                                src={b.proof_image_url}
+                                                alt="Minh chứng"
+                                                className="w-16 h-16 object-cover rounded-lg border border-indigo-200 cursor-pointer hover:opacity-80 transition-opacity"
+                                                onClick={() => setProofModal({open: true, url: b.proof_image_url, bookingId: b.id})}
+                                            />
+                                            <div className="flex-1">
+                                                <p className="text-xs text-indigo-700 font-medium">Khách đã gửi ảnh thanh toán</p>
+                                                <button
+                                                    onClick={() => setProofModal({open: true, url: b.proof_image_url, bookingId: b.id})}
+                                                    className="text-[11px] text-indigo-600 underline mt-0.5"
+                                                >Xem ảnh đầy đủ</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
                                 {/* Actions */}
                                 <div className="flex gap-3">
                                     <Button type="button" variant="ghost" onClick={() => { setPaymentModal({open: false, data: null}); setPaymentTab('cash'); }} className="font-semibold text-slate-600 flex-1 hover:bg-slate-200 border border-slate-300">Đóng</Button>
+                                    {b.proof_image_url && b.payment_status !== 'Fully_Paid' && (
+                                        <Button type="button" onClick={async () => {
+                                            try {
+                                                await api.onlineBookings.manualApprove(b.id);
+                                                toast.success('Đã duyệt thanh toán thủ công!');
+                                                setPaymentModal({open: false, data: null});
+                                                fetchData();
+                                            } catch { toast.error('Lỗi duyệt thủ công'); }
+                                        }} className="flex-[0.6] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow gap-1.5 h-12">
+                                            <ThumbsUp size={16}/> Duyệt
+                                        </Button>
+                                    )}
                                     <Button type="button" onClick={async () => {
                                         try {
                                             const related2 = bookings.filter(x =>
@@ -858,6 +903,38 @@ export default function BookingsShiftPage() {
             {/* STATS MODAL */}
             {statsModal && (
                 <StatsModal courts={courts} onClose={() => setStatsModal(false)} />
+            )}
+
+            {/* PROOF IMAGE LIGHTBOX */}
+            {proofModal.open && proofModal.url && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[300] flex items-center justify-center p-4" onClick={() => setProofModal({open: false, url: null, bookingId: null})}>
+                    <div className="relative max-w-lg w-full" onClick={e => e.stopPropagation()}>
+                        <div className="bg-white rounded-2xl overflow-hidden shadow-2xl">
+                            <div className="p-4 flex justify-between items-center border-b border-slate-100">
+                                <h4 className="font-bold text-slate-800">Ảnh minh chứng chuyển khoản</h4>
+                                <button onClick={() => setProofModal({open: false, url: null, bookingId: null})} className="p-1.5 hover:bg-slate-100 rounded-full">
+                                    <X size={18} className="text-slate-500"/>
+                                </button>
+                            </div>
+                            <img src={proofModal.url} alt="Minh chứng" className="w-full max-h-[70vh] object-contain p-2"/>
+                            {proofModal.bookingId && (
+                                <div className="p-4 border-t border-slate-100">
+                                    <Button onClick={async () => {
+                                        try {
+                                            await api.onlineBookings.manualApprove(proofModal.bookingId!);
+                                            toast.success('Đã duyệt thanh toán thủ công!');
+                                            setProofModal({open: false, url: null, bookingId: null});
+                                            setPaymentModal({open: false, data: null});
+                                            fetchData();
+                                        } catch { toast.error('Lỗi duyệt thủ công'); }
+                                    }} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white gap-2">
+                                        <ThumbsUp size={16}/> Duyệt Thanh Toán Thủ Công
+                                    </Button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

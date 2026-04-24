@@ -329,6 +329,11 @@ export const api = {
             if (!res.ok) return null;
             return res.json();
         },
+        getAll: async (): Promise<BankSettings[]> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/bank-settings/all`);
+            if (!res.ok) return [];
+            return res.json();
+        },
         update: async (data: Omit<BankSettings, 'id' | 'is_active'>): Promise<any> => {
             const res = await fetch(`${API_BASE_URL}/api/v1/bank-settings`, {
                 method: 'PUT',
@@ -337,6 +342,90 @@ export const api = {
             });
             if (!res.ok) throw new Error('Bank settings update failed');
             return res.json();
+        },
+        toggle: async (id: number, is_active: boolean): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/bank-settings/${id}/toggle`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_active })
+            });
+            if (!res.ok) throw new Error('Bank settings toggle failed');
+            return res.json();
+        },
+        delete: async (id: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/bank-settings/${id}`, {
+                method: 'DELETE',
+            });
+            if (!res.ok) throw new Error('Bank settings delete failed');
+            return res.json();
         }
-    }
+    },
+
+    onlineBookings: {
+        getAvailability: async (date: string): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/courts/availability?date=${date}`);
+            if (!res.ok) throw new Error('Get availability failed');
+            return res.json();
+        },
+        create: async (data: {
+            court_id: number;
+            date: string;
+            shift_ids: number[];
+            guest_name: string;
+            guest_phone: string;
+            note?: string;
+        }): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || 'Đặt sân thất bại');
+            }
+            return res.json();
+        },
+        getById: async (id: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings/${id}`);
+            if (!res.ok) throw new Error('Get booking failed');
+            return res.json();
+        },
+        getByPhone: async (phone: string): Promise<any[]> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings/by-phone/${encodeURIComponent(phone)}`);
+            if (!res.ok) throw new Error('Get bookings by phone failed');
+            return res.json();
+        },
+        uploadProof: async (bookingId: number, file: File): Promise<any> => {
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings/${bookingId}/upload-proof`, {
+                method: 'POST',
+                body: formData,
+            });
+            if (!res.ok) throw new Error('Upload proof failed');
+            return res.json();
+        },
+        confirmTest: async (payment_ref: string, amount: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/webhooks/confirm-test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ payment_ref, amount, source: 'test' }),
+            });
+            if (!res.ok) throw new Error('Confirm test failed');
+            return res.json();
+        },
+        manualApprove: async (bookingId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings/${bookingId}/manual-approve`, {
+                method: 'POST',
+            });
+            if (!res.ok) throw new Error('Manual approve failed');
+            return res.json();
+        },
+        getWebhookLogs: async (): Promise<any[]> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/webhook-logs`);
+            if (!res.ok) return [];
+            return res.json();
+        },
+    },
 }

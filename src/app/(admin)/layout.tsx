@@ -1,18 +1,18 @@
 import React from 'react';
 import Link from 'next/link';
 import { cookies } from 'next/headers';
-import { 
-  LayoutDashboard, 
-  CalendarDays, 
-  ShoppingCart, 
-  Package, 
-  Users, 
-  TrendingUp, 
-  Settings,
-  Bell,
-  Menu,
-  Search,
-  LogOut
+import {
+    LayoutDashboard,
+    CalendarDays,
+    ShoppingCart,
+    Package,
+    Users,
+    TrendingUp,
+    Settings,
+    Bell,
+    Menu,
+    Search,
+    LogOut
 } from 'lucide-react';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -31,7 +31,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                         <h2 className="text-xl font-bold tracking-tight m-0 text-slate-800">QuanLiSan</h2>
                     </div>
                 </div>
-                
+
                 <div className="px-4 pt-6">
                     <p className="text-xs font-semibold text-slate-400 mb-3 px-3 tracking-wider">QUẢN LÝ CHÍNH</p>
                     <nav className="flex flex-col gap-1">
@@ -67,11 +67,6 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                                 <span>Báo cáo doanh thu</span>
                             </Link>
                         )}
-                    </nav>
-                </div>
-
-                <div className="px-4 pt-6 mt-auto pb-4">
-                    <nav className="flex flex-col gap-1">
                         {isAdmin && (
                             <Link href="/settings" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 font-medium text-sm transition-colors hover:bg-slate-100 hover:text-slate-900">
                                 <Settings size={20} />
@@ -95,7 +90,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                             <input type="text" placeholder="Tìm kiếm sđt khách, lịch đặt..." className="bg-transparent border-none w-full text-sm text-slate-900 outline-none" />
                         </div>
                     </div>
-                    
+
                     <div className="flex items-center gap-4">
                         <button className="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-colors relative">
                             <Bell size={20} />

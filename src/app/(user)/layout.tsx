@@ -1,6 +1,6 @@
 import React from 'react';
 import Link from 'next/link';
-import { Target, Search, Calendar, User as UserIcon } from 'lucide-react';
+import { Target, Calendar, User as UserIcon, Clock, ShoppingBag } from 'lucide-react';
 
 export default function UserLayout({ children }: { children: React.ReactNode }) {
     return (
@@ -8,15 +8,9 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
             {/* Topbar for Mobile */}
             <header className="fixed top-0 inset-x-0 h-14 bg-white shadow-sm flex items-center justify-between px-4 z-40">
                 <div className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-emerald-500 to-emerald-700 tracking-tight">QuanLiSan</div>
-                <div className="flex gap-4">
-                    <button className="text-slate-500 hover:text-emerald-500 transition-colors">
-                        <Search size={24} />
-                    </button>
-                    <button className="text-slate-500 hover:text-emerald-500 transition-colors relative">
-                        <Target size={24} />
-                        <span className="absolute top-0 right-0 w-2 h-2 bg-rose-500 rounded-full"></span>
-                    </button>
-                </div>
+                <Link href="/courts/my-bookings" className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-emerald-600 px-3 py-1.5 bg-slate-100 hover:bg-emerald-50 rounded-full transition-colors">
+                    <Clock size={13}/> Lịch sử đặt sân
+                </Link>
             </header>
 
             {/* Main Content Area */}
@@ -32,10 +26,10 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
                 </Link>
                 <Link href="/courts" className="flex flex-col items-center gap-1 w-16 transition-colors hover:text-emerald-500 active:text-emerald-600 focus:text-emerald-500">
                     <Calendar size={24} className="mb-0.5" />
-                    <span>Sân bãi</span>
+                    <span>Đặt sân</span>
                 </Link>
                 <Link href="/shop" className="flex flex-col items-center gap-1 w-16 transition-colors hover:text-emerald-500 active:text-emerald-600 focus:text-emerald-500">
-                    <ShoppingCart size={24} className="mb-0.5" />
+                    <ShoppingBag size={24} className="mb-0.5" />
                     <span>Cửa hàng</span>
                 </Link>
                 <Link href="/profile" className="flex flex-col items-center gap-1 w-16 transition-colors hover:text-emerald-500 active:text-emerald-600 focus:text-emerald-500">
@@ -46,6 +40,3 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
         </div>
     );
 }
-
-// Ensure ShoppingCart is imported for the Shop link
-import { ShoppingCart } from 'lucide-react';

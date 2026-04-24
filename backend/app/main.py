@@ -1,8 +1,8 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, extract, and_, or_
+from sqlalchemy import select, func, extract, and_, or_, update
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 from contextlib import asynccontextmanager
@@ -10,11 +10,15 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta, date
 import shutil
 import os
+import json
+import random
+import string
 
 from app.db import engine, get_db
 from app.models import (
     Base, Product, Court, CourtType, InventoryLog, LogReason, LogStatus, LogType, LOG_REASON_LABELS,
-    Booking, BookingStatus, CourtBlock, BookingLog, PaymentStatus, CourtPricingRule, BankSettings
+    Booking, BookingStatus, CourtBlock, BookingLog, PaymentStatus, CourtPricingRule, BankSettings,
+    WebhookLog
 )
 
 # Define Pydantic schemas for requests/responses
@@ -104,6 +108,9 @@ class BankSettingsRequest(BaseModel):
     account_number: str
     account_name: str
 
+class BankToggleRequest(BaseModel):
+    is_active: bool
+
 class BankSettingsResponse(BaseModel):
     id: int
     bank_code: str
@@ -149,18 +156,17 @@ class CourtPricingRuleResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# Lifecycle: create tables + PostgreSQL migration
+# Lifecycle: create tables + PostgreSQL/SQLite migration
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs("uploads", exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         
-        # --- Auto-Migration: add 'type' column if missing (PostgreSQL only) ---
         from sqlalchemy import text
+        # --- Migration: inventory_logs.type ---
         try:
             await conn.execute(text("ALTER TABLE inventory_logs ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'ADJUSTMENT'"))
-            # Backfill type for existing records
             await conn.execute(text("""
                 UPDATE inventory_logs SET type = CASE
                     WHEN reason = 'STOCK_IN' THEN 'IMPORT'
@@ -170,9 +176,63 @@ async def lifespan(app: FastAPI):
                 END
                 WHERE type IS NULL OR type = 'ADJUSTMENT'
             """))
-            print("[Migration] 'type' column ready.")
+            print("[Migration] inventory_logs.type ready.")
         except Exception as e:
-            print(f"[Migration] info: {e}")
+            print(f"[Migration] inventory_logs.type: {e}")
+
+        # --- Migration: bookings online columns ---
+        is_postgres = "postgresql" in str(engine.url)
+        for col_def in [
+            ("expires_at",       "TIMESTAMP" if is_postgres else "DATETIME"),
+            ("payment_ref",      "VARCHAR(50)"),
+            ("proof_image_url",  "VARCHAR(255)"),
+            ("is_online",        "BOOLEAN DEFAULT FALSE" if is_postgres else "BOOLEAN DEFAULT 0"),
+            ("price",            "FLOAT"),
+        ]:
+            col_name, col_type = col_def
+            try:
+                if is_postgres:
+                    await conn.execute(text(f"ALTER TABLE bookings ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+                else:
+                    await conn.execute(text(f"ALTER TABLE bookings ADD COLUMN {col_name} {col_type}"))
+                print(f"[Migration] bookings.{col_name} added.")
+            except Exception as e:
+                # If IF NOT EXISTS is not supported or other issue, just log and pass
+                print(f"[Migration] bookings.{col_name} error: {e}")
+                pass
+
+        # --- Migration: webhook_logs table ---
+        try:
+            if is_postgres:
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS webhook_logs (
+                        id SERIAL PRIMARY KEY,
+                        source VARCHAR(50) DEFAULT 'casso',
+                        payment_ref VARCHAR(100),
+                        amount FLOAT,
+                        booking_id INTEGER REFERENCES bookings(id) ON DELETE SET NULL,
+                        matched BOOLEAN DEFAULT FALSE,
+                        raw_data TEXT,
+                        timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+            else:
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS webhook_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source VARCHAR(50) DEFAULT 'casso',
+                        payment_ref VARCHAR(100),
+                        amount FLOAT,
+                        booking_id INTEGER,
+                        matched BOOLEAN DEFAULT 0,
+                        raw_data TEXT,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+            print("[Migration] webhook_logs ready.")
+        except Exception as e:
+            print(f"[Migration] webhook_logs error: {e}")
+
     yield
 
 app = FastAPI(title="QuanLiSan API", lifespan=lifespan)
@@ -905,35 +965,62 @@ async def get_bank_settings(db: AsyncSession = Depends(get_db)):
     bank = result.scalar_one_or_none()
     if not bank:
         return None
-    return {"id": bank.id, "bank_code": bank.bank_code, "bank_name": bank.bank_name,
-            "account_number": bank.account_number, "account_name": bank.account_name, "is_active": bank.is_active}
+    return bank
+
+@app.get("/api/v1/bank-settings/all")
+async def get_all_bank_settings(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(BankSettings).order_by(BankSettings.id.desc()))
+    return result.scalars().all()
 
 @app.put("/api/v1/bank-settings")
 async def upsert_bank_settings(req: BankSettingsRequest, db: AsyncSession = Depends(get_db)):
-    # Đặt tất cả củ là inactive
-    await db.execute(select(BankSettings))  # Load to update
-    result = await db.execute(select(BankSettings))
-    banks = result.scalars().all()
-    for b in banks:
-        b.is_active = False
+    # Đặt tất cả cũ là inactive
+    await db.execute(update(BankSettings).values(is_active=False))
+    
     # Tìm hoặc tạo mới
     result2 = await db.execute(select(BankSettings).where(
         BankSettings.account_number == req.account_number,
         BankSettings.bank_code == req.bank_code
     ))
     existing = result2.scalar_one_or_none()
+
     if existing:
-        existing.bank_name = req.bank_name
-        existing.account_name = req.account_name
         existing.is_active = True
+        existing.account_name = req.account_name
+        existing.bank_name = req.bank_name
         await db.commit()
         return {"ok": True, "id": existing.id}
     else:
         bank = BankSettings(**req.dict(), is_active=True)
         db.add(bank)
         await db.commit()
-        await db.refresh(bank)
         return {"ok": True, "id": bank.id}
+
+@app.put("/api/v1/bank-settings/{bank_id}/toggle")
+async def toggle_bank_setting(bank_id: int, req: BankToggleRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(BankSettings).where(BankSettings.id == bank_id))
+    bank = result.scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail="Bank setting not found")
+        
+    if req.is_active:
+        # Deactivate all others first
+        await db.execute(update(BankSettings).values(is_active=False))
+    
+    bank.is_active = req.is_active
+    await db.commit()
+    return {"ok": True}
+
+@app.delete("/api/v1/bank-settings/{bank_id}")
+async def delete_bank_setting(bank_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(BankSettings).where(BankSettings.id == bank_id))
+    bank = result.scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail="Bank setting not found")
+    
+    await db.delete(bank)
+    await db.commit()
+    return {"ok": True}
 
 
 # ===========================
@@ -1138,3 +1225,615 @@ async def update_inventory_log(log_id: int, req: InventoryLogEditRequest, db: As
         
     await db.commit()
     return {"ok": True}
+
+
+# ==================================
+# HELPERS
+# ==================================
+def _gen_payment_ref(booking_id: int) -> str:
+    """Tạo mã nội dung chuyển khoản duy nhất, ngắn gọn."""
+    suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"SAN{booking_id}{suffix}"
+
+
+async def _auto_cancel_expired():
+    """Background: tự động hủy booking hết hạn chưa thanh toán."""
+    from app.db import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        now = datetime.utcnow()
+        res = await db.execute(
+            select(Booking).where(
+                Booking.is_online == True,
+                Booking.payment_status == PaymentStatus.UNPAID,
+                Booking.is_deleted == False,
+                Booking.expires_at != None,
+                Booking.expires_at < now
+            )
+        )
+        expired = res.scalars().all()
+        for b in expired:
+            b.is_deleted = True
+            b.status = BookingStatus.CANCELLED
+        if expired:
+            await db.commit()
+            print(f"[AutoCancel] {len(expired)} booking(s) expired & cancelled.")
+
+
+# ==================================
+# ONLINE BOOKING — PUBLIC ENDPOINTS
+# ==================================
+
+class OnlineBookingRequest(BaseModel):
+    court_id: int
+    date: str             # YYYY-MM-DD
+    shift_ids: List[int]  # Danh sách ca ID muốn đặt
+    guest_name: str
+    guest_phone: str
+    note: Optional[str] = ""
+
+class OnlineBookingResponse(BaseModel):
+    booking_id: int
+    payment_ref: str
+    expires_at: str       # ISO string
+    total_amount: float
+    court_name: str
+    shifts: List[dict]
+
+class ProofUploadResponse(BaseModel):
+    ok: bool
+    message: str
+
+class WebhookConfirmRequest(BaseModel):
+    payment_ref: str
+    amount: float
+    source: Optional[str] = "manual"
+
+# Bản định nghĩa ca (phải đồng bộ với frontend)
+SHIFTS = [
+    {"id": 1,  "start": "06:00", "end": "07:30"},
+    {"id": 2,  "start": "07:30", "end": "09:00"},
+    {"id": 3,  "start": "09:00", "end": "10:30"},
+    {"id": 4,  "start": "10:30", "end": "12:00"},
+    {"id": 5,  "start": "12:00", "end": "13:30"},
+    {"id": 6,  "start": "13:30", "end": "15:00"},
+    {"id": 7,  "start": "15:00", "end": "16:30"},
+    {"id": 8,  "start": "16:30", "end": "18:00"},
+    {"id": 9,  "start": "18:00", "end": "19:30"},
+    {"id": 10, "start": "19:30", "end": "21:00"},
+    {"id": 11, "start": "21:00", "end": "22:30"},
+    {"id": 12, "start": "22:30", "end": "23:59"},
+]
+
+
+@app.get("/api/v1/courts/availability")
+async def get_court_availability(date: str, db: AsyncSession = Depends(get_db)):
+    """
+    Endpoint công khai: trả về danh sách sân và trạng thái từng ca theo ngày.
+    Dùng để hiển thị lịch đặt sân cho khách hàng.
+    """
+    try:
+        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Ngày không hợp lệ (YYYY-MM-DD)")
+
+    start_of_day = datetime.combine(target_date, datetime.min.time())
+    end_of_day = start_of_day + timedelta(days=1)
+
+    courts_res = await db.execute(select(Court).where(Court.is_active == True))
+    courts_list = courts_res.scalars().all()
+
+    court_ids = [c.id for c in courts_list]
+
+    books_res = await db.execute(
+        select(Booking).where(
+            Booking.is_deleted == False,
+            Booking.court_id.in_(court_ids),
+            Booking.start_time >= start_of_day,
+            Booking.start_time < end_of_day,
+        )
+    )
+    bookings = books_res.scalars().all()
+
+    blocks_res = await db.execute(
+        select(CourtBlock).where(
+            CourtBlock.court_id.in_(court_ids),
+            CourtBlock.start_time >= start_of_day,
+            CourtBlock.start_time < end_of_day,
+        )
+    )
+    blocks = blocks_res.scalars().all()
+
+    # Pre-load ALL pricing rules for all courts in ONE query
+    rules_res = await db.execute(
+        select(CourtPricingRule).where(CourtPricingRule.court_id.in_(court_ids))
+    )
+    all_rules = rules_res.scalars().all()
+    # Index: {(court_id, shift_id): price_override}
+    rules_map: dict = {}
+    for r in all_rules:
+        if r.price_override:
+            rules_map[(r.court_id, r.shift_id)] = r.price_override
+
+    now_utc = datetime.utcnow()
+
+    result_courts = []
+    for court in courts_list:
+        shift_statuses = []
+        for shift in SHIFTS:
+            sh_start = datetime.combine(target_date, datetime.strptime(shift["start"], "%H:%M").time())
+            sh_end_str = shift["end"]
+            if sh_end_str == "23:59":
+                sh_end = datetime.combine(target_date, datetime.strptime("23:59", "%H:%M").time())
+            else:
+                sh_end = datetime.combine(target_date, datetime.strptime(sh_end_str, "%H:%M").time())
+
+            s_ts = sh_start.timestamp()
+            e_ts = sh_end.timestamp()
+
+            booking_hit = next(
+                (b for b in bookings
+                 if b.court_id == court.id
+                 and b.start_time.timestamp() < e_ts
+                 and b.end_time.timestamp() > s_ts),
+                None
+            )
+
+            block_hit = next(
+                (bl for bl in blocks
+                 if bl.court_id == court.id
+                 and bl.start_time.timestamp() < e_ts
+                 and bl.end_time.timestamp() > s_ts),
+                None
+            )
+
+            if block_hit:
+                shift_status = "blocked"
+            elif booking_hit:
+                is_online_hold = (
+                    getattr(booking_hit, 'is_online', False) and
+                    str(booking_hit.payment_status).replace("PaymentStatus.", "") == "Unpaid" and
+                    booking_hit.expires_at is not None and
+                    booking_hit.expires_at > now_utc
+                )
+                shift_status = "holding" if is_online_hold else "booked"
+            else:
+                shift_status = "available"
+
+            price = rules_map.get((court.id, shift["id"]), court.price_per_hour)
+
+            shift_statuses.append({
+                "shift_id": shift["id"],
+                "start": shift["start"],
+                "end": shift["end"],
+                "status": shift_status,
+                "price": price,
+            })
+
+        result_courts.append({
+            "id": court.id,
+            "name": court.name,
+            "type": court.type,
+            "price_per_hour": court.price_per_hour,
+            "deposit_price": court.deposit_price,
+            "shifts": shift_statuses,
+        })
+
+    return {"courts": result_courts, "date": date}
+
+
+
+@app.post("/api/v1/online-bookings")
+async def create_online_booking(
+    req: OnlineBookingRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    """Tạo đặt sân online kèm giữ chỗ 15 phút."""
+    # Validate court
+    court_res = await db.execute(select(Court).where(Court.id == req.court_id, Court.is_active == True))
+    court = court_res.scalar_one_or_none()
+    if not court:
+        raise HTTPException(status_code=404, detail="Sân không tồn tại")
+
+    try:
+        target_date = datetime.strptime(req.date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Ngày không hợp lệ")
+
+    now_utc = datetime.utcnow()
+    now_vn = now_utc + timedelta(hours=7)
+    today_vn = now_vn.replace(hour=0, minute=0, second=0, microsecond=0).date()
+    if target_date < today_vn:
+        raise HTTPException(status_code=400, detail="Không thể đặt sân cho ngày đã qua")
+
+    # Validate shifts
+    valid_shift_ids = {s["id"] for s in SHIFTS}
+    for sid in req.shift_ids:
+        if sid not in valid_shift_ids:
+            raise HTTPException(status_code=400, detail=f"Ca {sid} không hợp lệ")
+
+    # Kiểm tra từng ca xem có bị trùng không
+    start_of_day = datetime.combine(target_date, datetime.min.time())
+    end_of_day = start_of_day + timedelta(days=1)
+    existing_res = await db.execute(
+        select(Booking).where(
+            Booking.court_id == req.court_id,
+            Booking.is_deleted == False,
+            Booking.start_time >= start_of_day,
+            Booking.start_time < end_of_day,
+        )
+    )
+    existing_bookings = existing_res.scalars().all()
+
+    expires_at = now_utc + timedelta(minutes=15)
+    created_ids = []
+    shift_info_list = []
+    total_amount = 0.0
+    common_payment_ref = None
+
+    for sid in req.shift_ids:
+        shift = next(s for s in SHIFTS if s["id"] == sid)
+        sh_start = datetime.combine(target_date, datetime.strptime(shift["start"], "%H:%M").time())
+        sh_end_str = shift["end"]
+        sh_end = datetime.combine(target_date, datetime.strptime("23:59" if sh_end_str == "23:59" else sh_end_str, "%H:%M").time())
+
+        # Kiểm tra trùng lịch (bỏ qua booking đã hết hạn giữ chỗ)
+        conflict = next(
+            (b for b in existing_bookings
+             if b.start_time.timestamp() < sh_end.timestamp()
+             and b.end_time.timestamp() > sh_start.timestamp()
+             and not (b.is_online and str(b.payment_status).replace("PaymentStatus.", "") == "Unpaid"
+                     and b.expires_at and b.expires_at <= now_utc)),
+            None
+        )
+        if conflict:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Ca {shift['start']}-{shift['end']} đã được đặt. Vui lòng chọn ca khác."
+            )
+
+        # Tính giá
+        rule_res = await db.execute(
+            select(CourtPricingRule).where(
+                CourtPricingRule.court_id == req.court_id,
+                CourtPricingRule.shift_id == sid
+            )
+        )
+        rule = rule_res.scalar_one_or_none()
+        price_per_hour = rule.price_override if rule and rule.price_override else court.price_per_hour
+        duration_h = (sh_end.timestamp() - sh_start.timestamp()) / 3600
+        shift_price = duration_h * price_per_hour
+        total_amount += shift_price
+
+        booking = Booking(
+            court_id=req.court_id,
+            guest_name=req.guest_name,
+            guest_phone=req.guest_phone,
+            start_time=sh_start,
+            end_time=sh_end,
+            status=BookingStatus.PENDING,
+            payment_status=PaymentStatus.UNPAID,
+            note=req.note,
+            expires_at=expires_at,
+            is_online=True,
+            price=shift_price,
+        )
+        db.add(booking)
+        await db.flush()  # Lấy ID
+
+        if common_payment_ref is None:
+            # Tạo payment_ref từ ID của booking đầu tiên
+            common_payment_ref = _gen_payment_ref(booking.id)
+        
+        booking.payment_ref = common_payment_ref
+        created_ids.append(booking.id)
+        shift_info_list.append({
+            "shift_id": sid,
+            "start": shift["start"],
+            "end": shift["end"],
+            "price": shift_price
+        })
+
+    await db.commit()
+
+    # Cleanup background
+    background_tasks.add_task(_auto_cancel_expired)
+
+    # Trả về thông tin booking đầu tiên (chủ yếu để frontend redirect)
+    first_booking_res = await db.execute(select(Booking).where(Booking.id == created_ids[0]))
+    first_booking = first_booking_res.scalar_one()
+
+    return {
+        "ok": True,
+        "booking_id": first_booking.id,
+        "booking_ids": created_ids,
+        "payment_ref": first_booking.payment_ref,
+        "expires_at": first_booking.expires_at.isoformat() + "Z",
+        "total_amount": round(total_amount),
+        "court_name": court.name,
+        "shifts": shift_info_list,
+        "date": req.date,
+        "guest_name": req.guest_name,
+        "guest_phone": req.guest_phone,
+    }
+
+
+@app.get("/api/v1/online-bookings/{booking_id}")
+async def get_online_booking(booking_id: int, db: AsyncSession = Depends(get_db)):
+    """Tra cứu trạng thái booking (dùng để polling ở trang thanh toán)."""
+    res = await db.execute(
+        select(Booking).options(selectinload(Booking.court)).where(Booking.id == booking_id)
+    )
+    b = res.scalar_one_or_none()
+    if not b:
+        raise HTTPException(status_code=404, detail="Booking không tồn tại")
+
+    now_utc = datetime.utcnow()
+    is_expired = (
+        b.is_online and
+        b.payment_status == PaymentStatus.UNPAID and
+        b.expires_at is not None and
+        b.expires_at <= now_utc
+    )
+
+    # Tính tổng tiền (từ nhóm booking cùng payment_ref gốc)
+    # Lấy booking đầu tiên trong nhóm (có ID gốc là phần sau SAN)
+    group_query = select(Booking).where(
+        Booking.guest_phone == b.guest_phone,
+        Booking.is_deleted == False,
+    )
+    if b.payment_ref:
+        # Tìm các booking có cùng tiền tố SAN + ID của đơn đầu tiên
+        # Ví dụ: SAN123ABC -> tìm SAN123...
+        import re
+        m = re.match(r'(SAN\d+)', b.payment_ref)
+        if m:
+            prefix = m.group(1)
+            group_query = group_query.where(Booking.payment_ref.like(f"{prefix}%"))
+    
+    group_res = await db.execute(group_query)
+    group_bookings = group_res.scalars().all()
+    total_amount = sum(gb.price or 0.0 for gb in group_bookings)
+
+    return {
+        "id": b.id,
+        "court_name": b.court.name if b.court else "",
+        "court_id": b.court_id,
+        "guest_name": b.guest_name,
+        "guest_phone": b.guest_phone,
+        "start_time": b.start_time.isoformat(),
+        "end_time": b.end_time.isoformat(),
+        "payment_status": str(b.payment_status).replace("PaymentStatus.", ""),
+        "status": str(b.status).replace("BookingStatus.", ""),
+        "payment_ref": b.payment_ref,
+        "expires_at": b.expires_at.isoformat() + "Z" if b.expires_at else None,
+        "is_expired": is_expired,
+        "is_deleted": b.is_deleted,
+        "proof_image_url": b.proof_image_url,
+        "total_amount": round(total_amount),
+        "note": b.note,
+    }
+
+
+@app.get("/api/v1/online-bookings/by-phone/{phone}")
+async def get_bookings_by_phone(phone: str, db: AsyncSession = Depends(get_db)):
+    """Tra cứu lịch sử đặt sân theo số điện thoại."""
+    res = await db.execute(
+        select(Booking).options(selectinload(Booking.court)).where(
+            Booking.guest_phone == phone,
+            Booking.is_online == True,
+        ).order_by(Booking.start_time.desc()).limit(50)
+    )
+    bookings = res.scalars().all()
+    return [
+        {
+            "id": b.id,
+            "court_name": b.court.name if b.court else "",
+            "start_time": b.start_time.isoformat(),
+            "end_time": b.end_time.isoformat(),
+            "payment_status": str(b.payment_status).replace("PaymentStatus.", ""),
+            "status": str(b.status).replace("BookingStatus.", ""),
+            "payment_ref": b.payment_ref,
+            "expires_at": b.expires_at.isoformat() + "Z" if b.expires_at else None,
+            "proof_image_url": b.proof_image_url,
+            "is_deleted": b.is_deleted,
+        }
+        for b in bookings
+    ]
+
+
+@app.post("/api/v1/online-bookings/{booking_id}/upload-proof")
+async def upload_proof(
+    booking_id: int,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """Upload ảnh minh chứng chuyển khoản của khách."""
+    res = await db.execute(select(Booking).where(Booking.id == booking_id))
+    booking = res.scalar_one_or_none()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking không tồn tại")
+
+    # Lưu file
+    ext = os.path.splitext(file.filename)[1] if file.filename else ".jpg"
+    filename = f"proof_{booking_id}_{int(datetime.utcnow().timestamp())}{ext}"
+    file_path = f"uploads/{filename}"
+    with open(file_path, "wb+") as f:
+        shutil.copyfileobj(file.file, f)
+
+    proof_url = f"http://localhost:8000/uploads/{filename}"
+    booking.proof_image_url = proof_url
+    # Đánh dấu chờ xác nhận thủ công nếu chưa được webhook xác nhận
+    if str(booking.payment_status).replace("PaymentStatus.", "") == "Unpaid":
+        booking.payment_status = PaymentStatus.DEPOSIT  # Tạm dùng Deposit = "đang chờ"
+
+    log = BookingLog(
+        booking_id=booking.id,
+        user_id=None,
+        action="UploadProof",
+        details=f"Khách upload minh chứng: {proof_url}"
+    )
+    db.add(log)
+    await db.commit()
+
+    return {"ok": True, "proof_url": proof_url, "message": "Minh chứng đã được gửi, đang chờ xác nhận."}
+
+
+@app.post("/api/v1/webhooks/casso")
+async def webhook_casso(request_data: dict, db: AsyncSession = Depends(get_db)):
+    """
+    Webhook nhận callback từ Casso/SePay khi có biến động số dư.
+    Casso gửi: {"data": [{"description": "...", "amount": 150000, ...}]}
+    """
+    raw = json.dumps(request_data, ensure_ascii=False)
+    transactions = request_data.get("data", [request_data])  # Casso gửi list hoặc single
+
+    matched_count = 0
+    for txn in transactions:
+        description = str(txn.get("description", "") or txn.get("content", "")).upper()
+        amount = float(txn.get("amount", 0) or 0)
+
+        # Tìm payment_ref trong nội dung (pattern SAN + digits + 6chars)
+        import re
+        matches = re.findall(r'SAN\d+[A-Z0-9]{6}', description)
+
+        for ref in matches:
+            # Tìm TẤT CẢ booking có cùng payment_ref
+            booking_res = await db.execute(
+                select(Booking).where(
+                    Booking.payment_ref == ref,
+                    Booking.is_deleted == False,
+                )
+            )
+            matched_bookings = booking_res.scalars().all()
+
+            if matched_bookings:
+                # Lấy booking đầu tiên để log info
+                first_b = matched_bookings[0]
+                
+                wlog = WebhookLog(
+                    source="casso",
+                    payment_ref=ref,
+                    amount=amount,
+                    booking_id=first_b.id,
+                    matched=True,
+                    raw_data=raw[:2000],
+                )
+                db.add(wlog)
+
+                for b in matched_bookings:
+                    b.payment_status = PaymentStatus.FULLY_PAID
+                    b.status = BookingStatus.PAID
+                    b.expires_at = None
+
+                log = BookingLog(
+                    booking_id=first_b.id,
+                    user_id=None,
+                    action="WebhookPaid",
+                    details=f"Tự động xác nhận qua Casso ({len(matched_bookings)} ca). Ref: {ref}, Số tiền: {amount:,.0f}đ"
+                )
+                db.add(log)
+                matched_count += 1
+            else:
+                # Log phụ cho trường hợp không khớp
+                wlog = WebhookLog(
+                    source="casso",
+                    payment_ref=ref,
+                    amount=amount,
+                    matched=False,
+                    raw_data=raw[:2000],
+                )
+                db.add(wlog)
+
+    await db.commit()
+    return {"ok": True, "matched": matched_count}
+
+
+@app.post("/api/v1/webhooks/confirm-test")
+async def webhook_confirm_test(req: WebhookConfirmRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Endpoint giả lập xác nhận thanh toán (dùng để test nội bộ, không cần tài khoản Casso).
+    Production: bỏ hoặc bảo vệ bằng API key.
+    """
+    booking_res = await db.execute(
+        select(Booking).where(
+            Booking.payment_ref == req.payment_ref,
+            Booking.is_deleted == False,
+        )
+    )
+    matched_bookings = booking_res.scalars().all()
+    if not matched_bookings:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy booking với ref: {req.payment_ref}")
+
+    for b in matched_bookings:
+        b.payment_status = PaymentStatus.FULLY_PAID
+        b.status = BookingStatus.PAID
+        b.expires_at = None
+
+    first_b = matched_bookings[0]
+
+
+    wlog = WebhookLog(
+        source=req.source or "manual",
+        payment_ref=req.payment_ref,
+        amount=req.amount,
+        booking_id=first_b.id,
+        matched=True,
+        raw_data=json.dumps(req.model_dump(), ensure_ascii=False),
+    )
+    db.add(wlog)
+
+    log = BookingLog(
+        booking_id=first_b.id,
+        user_id=None,
+        action="ManualConfirm",
+        details=f"Xác nhận thủ công/test ({len(matched_bookings)} ca). Số tiền: {req.amount:,.0f}đ"
+    )
+    db.add(log)
+    await db.commit()
+
+    return {"ok": True, "booking_id": booking.id, "payment_status": "Fully_Paid"}
+
+
+@app.post("/api/v1/online-bookings/{booking_id}/manual-approve")
+async def manual_approve_booking(booking_id: int, db: AsyncSession = Depends(get_db)):
+    """Admin duyệt thủ công booking online khi có ảnh minh chứng."""
+    res = await db.execute(select(Booking).where(Booking.id == booking_id))
+    booking = res.scalar_one_or_none()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking không tồn tại")
+
+    booking.payment_status = PaymentStatus.FULLY_PAID
+    booking.status = BookingStatus.PAID
+    booking.expires_at = None
+
+    log = BookingLog(
+        booking_id=booking.id,
+        user_id=None,
+        action="AdminApprove",
+        details="Admin duyệt thủ công qua ảnh minh chứng"
+    )
+    db.add(log)
+    await db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/v1/webhook-logs")
+async def get_webhook_logs(limit: int = Query(50), db: AsyncSession = Depends(get_db)):
+    """Admin: xem lịch sử webhook."""
+    res = await db.execute(
+        select(WebhookLog).order_by(WebhookLog.timestamp.desc()).limit(limit)
+    )
+    logs = res.scalars().all()
+    return [
+        {
+            "id": l.id,
+            "source": l.source,
+            "payment_ref": l.payment_ref,
+            "amount": l.amount,
+            "booking_id": l.booking_id,
+            "matched": l.matched,
+            "timestamp": l.timestamp.isoformat() if l.timestamp else None,
+        }
+        for l in logs
+    ]
