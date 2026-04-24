@@ -9,11 +9,11 @@ import {
   Users, 
   TrendingUp, 
   Settings,
-  Bell,
   Menu,
   Search,
   LogOut
 } from 'lucide-react';
+import NotificationBell from '@/components/NotificationBell';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
     // Read the simulated role from HTTP cookies
@@ -97,10 +97,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                     </div>
                     
                     <div className="flex items-center gap-4">
-                        <button className="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-colors relative">
-                            <Bell size={20} />
-                            <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-orange-500 rounded-full border-2 border-white"></span>
-                        </button>
+                        <NotificationBell userRole={userRole} />
                         <div className="flex items-center gap-3 px-2 py-1 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
                             <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center font-semibold">
                                 {isAdmin ? 'A' : 'S'}

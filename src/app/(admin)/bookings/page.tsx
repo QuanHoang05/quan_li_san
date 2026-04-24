@@ -67,11 +67,29 @@ export default function BookingsShiftPage() {
         reason: 'Bảo trì sân', start_time:'', end_time:''
     });
 
+    // Auto-reload countdown
+    const [countdown, setCountdown] = useState(60);
+
     useEffect(() => { 
         fetchData();
         setSelectedShiftIds([]);
         api.bank.get().then(b => setBankSettings(b)).catch(() => {});
     }, [currentDate, selectedCourtId]);
+
+    // Auto-reload mỗi 60 giây
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setCountdown(prev => {
+                if (prev <= 1) {
+                    fetchData();
+                    return 60;
+                }
+                return prev - 1;
+            });
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [currentDate, selectedCourtId]);
+
 
     // Tự động chuyển sang Thanh toán hết nếu là khách vãng lai (không tên, không SĐT)
     useEffect(() => {
@@ -297,8 +315,13 @@ export default function BookingsShiftPage() {
                         <span className="w-2.5 h-2.5 rounded bg-emerald-500"></span> Đã thanh toán 
                         <span className="w-2.5 h-2.5 rounded bg-yellow-500"></span> Đã đặt cọc 
                         <span className="w-2.5 h-2.5 rounded bg-rose-500"></span> Chưa thanh toán
+                        <span className="ml-2 inline-flex items-center gap-1.5 text-xs font-semibold bg-slate-100 px-2.5 py-1 rounded-full text-slate-500">
+                            <span className={`w-1.5 h-1.5 rounded-full ${countdown <= 10 ? 'bg-orange-400 animate-pulse' : 'bg-emerald-400'}`}></span>
+                            Tự làm mới sau {countdown}s
+                        </span>
                     </p>
                 </div>
+
                 {!isManageCourts ? (
                     <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-xl border border-slate-200 shadow-sm">
                         <button onClick={() => changeDate(-1)} className="p-2 text-slate-600 hover:text-slate-900 transition-colors"><ChevronLeft size={18} /></button>
@@ -660,13 +683,12 @@ export default function BookingsShiftPage() {
                             </div>
                             <div>
                                 <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Loại Sân Thể Thao</label>
-                                <input list="courtTypes" value={courtForm.type} onChange={e=>setCourtForm({...courtForm, type: e.target.value})} className="w-full border border-slate-200 focus:border-indigo-400 p-2.5 rounded-md font-medium text-slate-800 shadow-sm focus:outline-none bg-white"/>
-                                <datalist id="courtTypes">
+                                <select value={courtForm.type} onChange={e=>setCourtForm({...courtForm, type: e.target.value})} className="w-full border border-slate-200 focus:border-indigo-400 p-2.5 rounded-md font-medium text-slate-800 shadow-sm focus:outline-none bg-white">
                                     <option value="Cầu lông">Cầu lông</option>
                                     <option value="Bóng đá">Bóng đá</option>
                                     <option value="Tennis">Tennis</option>
                                     <option value="Pickleball">Pickleball</option>
-                                </datalist>
+                                </select>
                             </div>
                             <div className="flex gap-4">
                                 <div className="flex-1">

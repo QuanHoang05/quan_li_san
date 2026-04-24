@@ -26,6 +26,21 @@ export interface BankSettings {
 }
 
 export const api = {
+    auth: {
+        login: async (credentials: { email: string; password: string }): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(credentials)
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Login failed');
+            }
+            return data;
+        }
+    },
+
     uploadFile: async (file: File): Promise<{url: string}> => {
         const formData = new FormData();
         formData.append('file', file);
@@ -338,5 +353,53 @@ export const api = {
             if (!res.ok) throw new Error('Bank settings update failed');
             return res.json();
         }
+    },
+
+    customers: {
+        getAll: async (params?: { role?: string; search?: string }): Promise<any[]> => {
+            const q = new URLSearchParams();
+            if (params?.role) q.set('role', params.role);
+            if (params?.search) q.set('search', params.search);
+            const res = await fetch(`${API_BASE_URL}/api/v1/users?${q.toString()}`);
+            if (!res.ok) throw new Error('Lỗi tải danh sách khách hàng');
+            return res.json();
+        },
+        getById: async (id: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users/${id}`);
+            if (!res.ok) throw new Error('Lỗi tải thông tin khách hàng');
+            return res.json();
+        },
+        update: async (id: number, data: { name?: string; email?: string; phone?: string; role?: string; wallet_balance?: number }): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (!res.ok) throw new Error('Cập nhật thất bại');
+            return res.json();
+        },
+        delete: async (id: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users/${id}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('Xóa tài khoản thất bại');
+            return res.json();
+        },
+        topup: async (id: number, amount: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users/${id}/topup?amount=${amount}`, { method: 'POST' });
+            if (!res.ok) throw new Error('Nạp tiền thất bại');
+            return res.json();
+        },
+        create: async (data: any): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || 'Tạo tài khoản thất bại');
+            }
+            return res.json();
+        }
     }
 }
+

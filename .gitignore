@@ -44,3 +44,7 @@ next-env.d.ts
 /docker/
 
 /src/generated/prisma
+
+# Python
+__pycache__/
+*.pyc

@@ -17,6 +17,7 @@ class CourtType(str, enum.Enum):
     BADMINTON = "Badminton"
     PICKLEBALL = "Pickleball"
     TENNIS = "Tennis"
+    FOOTBALL = "Bóng đá"
 
 class PaymentStatus(str, enum.Enum):
     UNPAID = "Unpaid"

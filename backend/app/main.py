@@ -11,11 +11,14 @@ from datetime import datetime, timedelta, date
 import shutil
 import os
 
-from app.db import engine, get_db
+from app.db import engine, get_db, AsyncSessionLocal
 from app.models import (
     Base, Product, Court, CourtType, InventoryLog, LogReason, LogStatus, LogType, LOG_REASON_LABELS,
-    Booking, BookingStatus, CourtBlock, BookingLog, PaymentStatus, CourtPricingRule, BankSettings
+    Booking, BookingStatus, CourtBlock, BookingLog, PaymentStatus, CourtPricingRule, BankSettings, UserRole, User as UserModel
 )
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 # Define Pydantic schemas for requests/responses
 class ProductBase(BaseModel):
@@ -173,6 +176,26 @@ async def lifespan(app: FastAPI):
             print("[Migration] 'type' column ready.")
         except Exception as e:
             print(f"[Migration] info: {e}")
+
+    # --- Seed Admin ---
+    async with AsyncSessionLocal() as session:
+        try:
+            from app.models import User as UserModel
+            res = await session.execute(select(UserModel).where(UserModel.email == "admin@example.com"))
+            if not res.scalar_one_or_none():
+                admin = UserModel(
+                    name="Quản trị viên",
+                    email="admin@example.com",
+                    role=UserRole.ADMIN,
+                    password_hash=pwd_context.hash("123"),
+                    wallet_balance=1000000.0
+                )
+                session.add(admin)
+                await session.commit()
+                print("[Seed] Created Admin")
+        except Exception as e:
+            print(f"[Seed] Error: {e}")
+
     yield
 
 app = FastAPI(title="QuanLiSan API", lifespan=lifespan)
@@ -183,7 +206,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Setup CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -198,7 +221,7 @@ async def upload_file(file: UploadFile = File(...)):
     file_location = f"uploads/{file.filename}"
     with open(file_location, "wb+") as file_object:
         shutil.copyfileobj(file.file, file_object)
-    return {"url": f"http://localhost:8000/uploads/{file.filename}"}
+    return {"url": f"http://127.0.0.1:8000/uploads/{file.filename}"}
 
 # ===========================
 # PRODUCTS CRUD
@@ -473,7 +496,9 @@ async def get_inventory_logs(
 @app.post("/api/v1/inventory/import")
 async def import_stock(req: ImportRequest, db: AsyncSession = Depends(get_db)):
     """Nhập kho: tăng tồn và ghi log, cập nhật giá hoặc tạo mới"""
-    status_val = LogStatus.APPROVED.value if req.is_admin else LogStatus.PENDING.value
+    # Nhập kho luôn tự động duyệt (Approved) để cập nhật tồn kho ngay lập tức
+    # Chế độ PENDING chỉ dành cho Báo hỏng (Damage)
+    status_val = LogStatus.APPROVED.value
 
     if req.product_id > 0:
         res = await db.execute(select(Product).where(Product.id == req.product_id))
@@ -1138,3 +1163,225 @@ async def update_inventory_log(log_id: int, req: InventoryLogEditRequest, db: As
         
     await db.commit()
     return {"ok": True}
+
+
+# ===========================
+# USERS / CUSTOMERS MANAGEMENT
+# ===========================
+class UserUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role: Optional[str] = None
+    wallet_balance: Optional[float] = None
+
+class UserCreateRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    phone: Optional[str] = None
+    role: str = "User"
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    phone: Optional[str] = None
+    role: str
+    wallet_balance: float
+    booking_count: int = 0
+    class Config:
+        from_attributes = True
+
+@app.get("/api/v1/users")
+async def get_users(
+    role: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+):
+    """Lấy danh sách tất cả user (có thể lọc theo role và search)"""
+    from app.models import User as UserModel
+    filters = []
+    if role and role != "all":
+        filters.append(UserModel.role == role)
+    if search:
+        filters.append(
+            or_(
+                UserModel.name.ilike(f"%{search}%"),
+                UserModel.email.ilike(f"%{search}%"),
+                UserModel.phone.ilike(f"%{search}%")
+            )
+        )
+    
+    query = select(UserModel)
+    if filters:
+        query = query.where(and_(*filters))
+    query = query.order_by(UserModel.id.desc())
+    
+    result = await db.execute(query)
+    users = result.scalars().all()
+    
+    # Count bookings for each user
+    user_list = []
+    for u in users:
+        booking_res = await db.execute(
+            select(func.count(Booking.id)).where(
+                Booking.user_id == u.id,
+                Booking.is_deleted == False
+            )
+        )
+        booking_count = booking_res.scalar() or 0
+        user_list.append({
+            "id": u.id,
+            "name": u.name,
+            "email": u.email,
+            "phone": u.phone or "",
+            "role": u.role if isinstance(u.role, str) else u.role.value,
+            "wallet_balance": u.wallet_balance or 0.0,
+            "booking_count": booking_count,
+            "google_id": u.google_id
+        })
+    
+    return user_list
+
+import hashlib
+
+@app.post("/api/v1/users")
+async def create_user(req: UserCreateRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        # Check if email exists
+        res = await db.execute(select(UserModel).where(UserModel.email == req.email))
+        if res.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Email already registered")
+            
+        new_user = UserModel(
+            name=req.name,
+            email=req.email,
+            phone=req.phone,
+            role=req.role,
+            password_hash=pwd_context.hash(req.password),
+            wallet_balance=0.0
+        )
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)
+        return {"ok": True, "user_id": new_user.id}
+    except Exception as e:
+        print(f"Error creating user: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/auth/login")
+async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        res = await db.execute(select(UserModel).where(UserModel.email == req.email))
+        user = res.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+            
+        if not user.password_hash or not pwd_context.verify(req.password, user.password_hash):
+            # Fallback for old/legacy users who might have plain text
+            if user.password_hash == req.password:
+                # Migrate to hashed password
+                user.password_hash = pwd_context.hash(req.password)
+                await db.commit()
+            else:
+                raise HTTPException(status_code=401, detail="Invalid email or password")
+            
+        return {
+            "ok": True,
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role if isinstance(user.role, str) else user.role.value
+            }
+        }
+    except Exception as e:
+        print(f"Error during login: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/users/{user_id}")
+async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    from app.models import User as UserModel
+    result = await db.execute(select(UserModel).where(UserModel.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get bookings
+    booking_res = await db.execute(
+        select(Booking).options(selectinload(Booking.court)).where(
+            Booking.user_id == user_id,
+            Booking.is_deleted == False
+        ).order_by(Booking.start_time.desc()).limit(20)
+    )
+    bookings = booking_res.scalars().all()
+    
+    return {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "phone": user.phone or "",
+        "role": user.role if isinstance(user.role, str) else user.role.value,
+        "wallet_balance": user.wallet_balance or 0.0,
+        "google_id": user.google_id,
+        "bookings": [
+            {
+                "id": b.id,
+                "court_name": b.court.name if b.court else "",
+                "start_time": b.start_time.isoformat(),
+                "end_time": b.end_time.isoformat(),
+                "payment_status": b.payment_status if isinstance(b.payment_status, str) else b.payment_status.value,
+                "note": b.note or ""
+            }
+            for b in bookings
+        ]
+    }
+
+@app.put("/api/v1/users/{user_id}")
+async def update_user(user_id: int, req: UserUpdateRequest, db: AsyncSession = Depends(get_db)):
+    from app.models import User as UserModel
+    result = await db.execute(select(UserModel).where(UserModel.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if req.name is not None: user.name = req.name
+    if req.email is not None: user.email = req.email
+    if req.phone is not None: user.phone = req.phone
+    if req.role is not None: user.role = req.role
+    if req.wallet_balance is not None: user.wallet_balance = req.wallet_balance
+    
+    await db.commit()
+    return {"ok": True}
+
+@app.delete("/api/v1/users/{user_id}")
+async def delete_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    from app.models import User as UserModel
+    result = await db.execute(select(UserModel).where(UserModel.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.delete(user)
+    await db.commit()
+    return {"ok": True}
+
+@app.post("/api/v1/users/{user_id}/topup")
+async def topup_wallet(user_id: int, amount: float = Query(...), db: AsyncSession = Depends(get_db)):
+    """Nạp tiền vào ví khách hàng"""
+    from app.models import User as UserModel
+    result = await db.execute(select(UserModel).where(UserModel.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    user.wallet_balance = (user.wallet_balance or 0) + amount
+    await db.commit()
+    return {"ok": True, "new_balance": user.wallet_balance}
+
