@@ -4,9 +4,10 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { User, Lock, Mail, ShieldAlert } from 'lucide-react';
+import { Lock, Mail, ShieldAlert } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api } from '@/lib/api';
+import Link from 'next/link';
 
 // Define standard mock users
 const MOCK_USERS = [
@@ -20,8 +21,7 @@ function LoginForm() {
     const searchParams = useSearchParams();
     const redirectUrl = searchParams.get('redirect');
 
-    const [isLogin, setIsLogin] = useState(true);
-    const [form, setForm] = useState({ email: '', pass: '', name: '' });
+    const [form, setForm] = useState({ email: '', pass: '' });
 
     // Manage dynamic users in localStorage
     const [users, setUsers] = useState<typeof MOCK_USERS>([]);
@@ -35,11 +35,6 @@ function LoginForm() {
             localStorage.setItem('app_mock_users', JSON.stringify(MOCK_USERS));
         }
     }, []);
-
-    const saveUsers = (newUsers: typeof MOCK_USERS) => {
-        setUsers(newUsers);
-        localStorage.setItem('app_mock_users', JSON.stringify(newUsers));
-    };
 
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -58,6 +53,14 @@ function LoginForm() {
             if (res && res.ok) {
                 const user = res.user;
                 console.log("Backend login success:", user.role);
+                
+                // Clear old user data before setting new one
+                localStorage.removeItem('wallet_balance');
+                localStorage.removeItem('wallet_pin');
+                localStorage.removeItem('wallet_history');
+                localStorage.removeItem('profile_name');
+                localStorage.removeItem('profile_phone');
+                
                 toast.success(`Đăng nhập thành công với vai trò ${user.role}!`);
                 document.cookie = `role=${user.role}; path=/`;
                 document.cookie = `userName=${user.name}; path=/`;
@@ -83,6 +86,13 @@ function LoginForm() {
         // Fallback sang mock users (localStorage)
         const user = users.find(u => u.email === form.email && u.pass === form.pass);
         if (user) {
+            // Clear old user data
+            localStorage.removeItem('wallet_balance');
+            localStorage.removeItem('wallet_pin');
+            localStorage.removeItem('wallet_history');
+            localStorage.removeItem('profile_name');
+            localStorage.removeItem('profile_phone');
+            
             toast.success(`Đăng nhập thành công (Mock) với vai trò ${user.role}!`);
             document.cookie = `role=${user.role}; path=/`;
             document.cookie = `userName=${user.name}; path=/`;
@@ -96,34 +106,6 @@ function LoginForm() {
             }
         } else {
             toast.error("Sai email hoặc mật khẩu!");
-        }
-    };
-
-    const handleRegister = async (e: React.FormEvent) => {
-        e.preventDefault();
-
-        try {
-            const newUserPayload = {
-                email: form.email,
-                password: form.pass,
-                name: form.name || 'Người dùng mới',
-                role: 'User'
-            };
-
-            // Lưu vào database qua backend
-            await api.customers.create(newUserPayload);
-
-            toast.success("Đăng ký thành công vào hệ thống! Đang đăng nhập...");
-
-            // Tự động đăng nhập sau khi đăng ký
-            document.cookie = `role=User; path=/`;
-            document.cookie = `userName=${newUserPayload.name}; path=/`;
-
-            if (redirectUrl) router.push(redirectUrl);
-            else router.push('/matchmaking');
-
-        } catch (err: any) {
-            toast.error(err.message || "Đăng ký thất bại!");
         }
     };
 
@@ -175,32 +157,13 @@ function LoginForm() {
                 {/* Right Panel - Form */}
                 <div className="w-full md:w-7/12 p-8 md:p-12 flex flex-col justify-center bg-white relative">
                     <div className="mb-8">
-                        <h2 className="text-3xl font-bold text-slate-800 tracking-tight">{isLogin ? 'Đăng Nhập' : 'Tạo Tài Khoản Mới'}</h2>
+                        <h2 className="text-3xl font-bold text-slate-800 tracking-tight">Đăng Nhập</h2>
                         <p className="text-slate-500 mt-2">
-                            {isLogin ? 'Chào mừng bạn quay lại hệ thống' : 'Tham gia cộng đồng thể thao ngay hôm nay!'}
+                            Chào mừng bạn quay lại hệ thống
                         </p>
                     </div>
 
-                    <form onSubmit={isLogin ? handleLogin : handleRegister} className="flex flex-col gap-5">
-                        {!isLogin && (
-                            <div>
-                                <label className="text-sm font-semibold text-slate-700 mb-1.5 block">Họ và Tên</label>
-                                <div className="relative">
-                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                                        <User size={18} />
-                                    </div>
-                                    <input
-                                        type="text"
-                                        required={!isLogin}
-                                        value={form.name}
-                                        onChange={e => setForm({ ...form, name: e.target.value })}
-                                        className="w-full pl-10 pr-4 py-3 border border-slate-200 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10 rounded-xl font-medium text-slate-800 transition-all outline-none bg-slate-50/50"
-                                        placeholder="Nhập họ và tên..."
-                                    />
-                                </div>
-                            </div>
-                        )}
-
+                    <form onSubmit={handleLogin} className="flex flex-col gap-5">
                         <div>
                             <label className="text-sm font-semibold text-slate-700 mb-1.5 block">Email</label>
                             <div className="relative">
@@ -236,15 +199,15 @@ function LoginForm() {
                         </div>
 
                         <Button type="submit" className="w-full py-4 mt-2 text-lg font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-lg shadow-emerald-600/30">
-                            {isLogin ? 'Đăng Nhập' : 'Tạo Tài Khoản'}
+                            Đăng Nhập
                         </Button>
                     </form>
 
                     <div className="mt-8 text-center text-sm font-medium text-slate-500">
-                        {isLogin ? "Chưa có tài khoản? " : "Đã có tài khoản? "}
-                        <button onClick={() => { setIsLogin(!isLogin); setForm({ email: '', pass: '', name: '' }); }} className="text-emerald-600 font-bold hover:text-emerald-700 hover:underline">
-                            {isLogin ? 'Đăng ký ngay' : 'Đăng nhập'}
-                        </button>
+                        Chưa có tài khoản?{" "}
+                        <Link href="/register" className="text-emerald-600 font-bold hover:text-emerald-700 hover:underline">
+                            Đăng ký ngay
+                        </Link>
                     </div>
                 </div>
             </div>

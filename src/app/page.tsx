@@ -30,6 +30,51 @@ export default function Home() {
         position: 'relative',
         overflow: 'hidden',
       }}>
+        {/* Header / Navigation */}
+        <div style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          padding: '1.5rem 2rem',
+          display: 'flex',
+          justifyContent: 'flex-end',
+          alignItems: 'center',
+          gap: '1rem',
+          zIndex: 10,
+        }}>
+          <button onClick={() => router.push('/login')} style={{
+            background: 'transparent',
+            color: 'white',
+            border: 'none',
+            fontSize: '1rem',
+            fontWeight: 600,
+            cursor: 'pointer',
+            padding: '0.5rem 1rem',
+            transition: 'color 0.2s',
+          }}
+          onMouseEnter={e => e.currentTarget.style.color = '#10b981'}
+          onMouseLeave={e => e.currentTarget.style.color = 'white'}>
+            Đăng nhập
+          </button>
+          <button onClick={() => router.push('/register')} style={{
+            background: 'linear-gradient(135deg, #10b981, #059669)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            padding: '0.6rem 1.2rem',
+            fontSize: '1rem',
+            fontWeight: 600,
+            cursor: 'pointer',
+            boxShadow: '0 4px 12px rgba(16,185,129,0.3)',
+            transition: 'all 0.2s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 6px 16px rgba(16,185,129,0.4)'; }}
+          onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(16,185,129,0.3)'; }}>
+            Đăng ký
+          </button>
+        </div>
+
         {/* Background glow effects */}
         <div style={{ position: 'absolute', top: '20%', left: '15%', width: '400px', height: '400px', background: 'radial-gradient(circle, rgba(16,185,129,0.12) 0%, transparent 70%)', borderRadius: '50%', pointerEvents: 'none' }} />
         <div style={{ position: 'absolute', bottom: '20%', right: '10%', width: '350px', height: '350px', background: 'radial-gradient(circle, rgba(16,185,129,0.08) 0%, transparent 70%)', borderRadius: '50%', pointerEvents: 'none' }} />

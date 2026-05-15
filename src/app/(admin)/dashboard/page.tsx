@@ -38,6 +38,7 @@ export default function DashboardPage() {
         productsSold: 0
     });
     const [chartData, setChartData] = useState(mockRevenueData);
+    const [productData, setProductData] = useState<any[]>(mockProductData);
 
     useEffect(() => {
         const fetchDashboardData = async () => {
@@ -81,6 +82,15 @@ export default function DashboardPage() {
                     newChart[dayIndex].bookings = bookingCount;
                 }
                 setChartData(newChart);
+
+                // Update product stats
+                if (productStats && productStats.by_product) {
+                    const topProducts = productStats.by_product.slice(0, 5).map((p: any) => ({
+                        name: p.product_name,
+                        sales: p.qty_sold
+                    }));
+                    if (topProducts.length > 0) setProductData(topProducts);
+                }
 
             } catch (error) {
                 console.error("Error fetching dashboard stats:", error);
@@ -197,14 +207,14 @@ export default function DashboardPage() {
                     </div>
                     <div className="p-6 flex-1 min-h-[350px]">
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={mockProductData} layout="vertical" margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                            <BarChart data={productData} layout="vertical" margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
                                 <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                                <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
-                                <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: '#475569', fontSize: 13, fontWeight: 600 }} width={80} />
+                                <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: "#64748b", fontSize: 12 }} />
+                                <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: "#475569", fontSize: 13, fontWeight: 600 }} width={80} />
                                 <RechartsTooltip
-                                    formatter={(value: any) => [`${value} món`, 'Đã bán']}
-                                    cursor={{ fill: '#f8fafc' }}
-                                    contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                    formatter={(value: any) => [`${value} món`, "Đã bán"]}
+                                    cursor={{ fill: "#f8fafc" }}
+                                    contentStyle={{ borderRadius: "12px", border: "none", boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)" }}
                                 />
                                 <Bar dataKey="sales" fill="#6366f1" radius={[0, 4, 4, 0]} barSize={24} />
                             </BarChart>

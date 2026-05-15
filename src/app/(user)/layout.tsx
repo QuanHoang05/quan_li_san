@@ -15,6 +15,7 @@ import NotificationBell from '@/components/NotificationBell';
 export default async function UserLayout({ children }: { children: React.ReactNode }) {
     const cookieStore = await cookies();
     const userName = cookieStore.get('userName')?.value || 'Khách Hàng';
+    const userId = cookieStore.get('user_id')?.value;
 
     return (
         <div className="flex h-screen bg-slate-50 overflow-hidden">
@@ -71,7 +72,7 @@ export default async function UserLayout({ children }: { children: React.ReactNo
                     </div>
                     
                     <div className="flex items-center gap-4">
-                        <NotificationBell userRole="CUSTOMER" />
+                        <NotificationBell userId={userId ? parseInt(userId) : undefined} userRole="CUSTOMER" />
                         <div className="flex items-center gap-3 px-2 py-1 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
                             <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center font-semibold">
                                 {userName.charAt(0).toUpperCase()}

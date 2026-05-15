@@ -59,7 +59,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                         </Link>
                         <Link href="/customers" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 font-medium text-sm transition-colors hover:bg-slate-100 hover:text-slate-900">
                             <Users size={20} />
-                            <span>Khách hàng & Cộng đồng</span>
+                            <span>Khách hàng &amp; Cộng đồng</span>
                         </Link>
                         {isAdmin && (
                             <Link href="/reports" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 font-medium text-sm transition-colors hover:bg-slate-100 hover:text-slate-900">
@@ -72,12 +72,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
                 <div className="px-4 pt-6 mt-auto pb-4">
                     <nav className="flex flex-col gap-1">
-                        {isAdmin && (
-                            <Link href="/settings" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 font-medium text-sm transition-colors hover:bg-slate-100 hover:text-slate-900">
-                                <Settings size={20} />
-                                <span>Thiết lập hệ thống</span>
-                            </Link>
-                        )}
+                        <Link href="/settings" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 font-medium text-sm transition-colors hover:bg-slate-100 hover:text-slate-900">
+                            <Settings size={20} />
+                            <span>Thiết lập hệ thống</span>
+                        </Link>
                     </nav>
                 </div>
             </aside>

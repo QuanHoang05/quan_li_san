@@ -241,9 +241,9 @@ export const api = {
             return res.json();
         }
     },
-    
+
     scheduler: {
-        getDaily: async (date: string): Promise<{courts: any[], bookings: any[], blocks: any[]}> => {
+        getDaily: async (date: string): Promise<any> => {
             const res = await fetch(`${API_BASE_URL}/api/v1/scheduler?date=${date}`);
             if (!res.ok) throw new Error('Get scheduler failed');
             return res.json();
@@ -344,6 +344,11 @@ export const api = {
             if (!res.ok) return null;
             return res.json();
         },
+        getAll: async (): Promise<BankSettings[]> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/bank-settings/all`);
+            if (!res.ok) return [];
+            return res.json();
+        },
         update: async (data: Omit<BankSettings, 'id' | 'is_active'>): Promise<any> => {
             const res = await fetch(`${API_BASE_URL}/api/v1/bank-settings`, {
                 method: 'PUT',
@@ -351,6 +356,233 @@ export const api = {
                 body: JSON.stringify(data)
             });
             if (!res.ok) throw new Error('Bank settings update failed');
+            return res.json();
+        },
+        toggle: async (id: number, is_active: boolean): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/bank-settings/${id}/toggle`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_active })
+            });
+            if (!res.ok) throw new Error('Bank settings toggle failed');
+            return res.json();
+        },
+        delete: async (id: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/bank-settings/${id}`, {
+                method: 'DELETE',
+            });
+            if (!res.ok) throw new Error('Bank settings delete failed');
+            return res.json();
+        }
+    },
+
+    onlineBookings: {
+        getAvailability: async (date: string): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/courts/availability?date=${date}`);
+            if (!res.ok) throw new Error('Get availability failed');
+            return res.json();
+        },
+        create: async (data: {
+            court_id: number;
+            date: string;
+            shift_ids: number[];
+            guest_name: string;
+            guest_phone: string;
+            note?: string;
+        }): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || 'Đặt sân thất bại');
+            }
+            return res.json();
+        },
+        getById: async (id: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings/${id}`);
+            if (!res.ok) throw new Error('Get booking failed');
+            return res.json();
+        },
+        getByPhone: async (phone: string): Promise<any[]> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings/by-phone/${encodeURIComponent(phone)}`);
+            if (!res.ok) throw new Error('Get bookings by phone failed');
+            return res.json();
+        },
+        uploadProof: async (bookingId: number, file: File): Promise<any> => {
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings/${bookingId}/upload-proof`, {
+                method: 'POST',
+                body: formData,
+            });
+            if (!res.ok) throw new Error('Upload proof failed');
+            return res.json();
+        },
+        confirmTest: async (payment_ref: string, amount: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/webhooks/confirm-test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ payment_ref, amount, source: 'test' }),
+            });
+            if (!res.ok) throw new Error('Confirm test failed');
+            return res.json();
+        },
+        manualApprove: async (bookingId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/online-bookings/${bookingId}/manual-approve`, {
+                method: 'POST',
+            });
+            if (!res.ok) throw new Error('Manual approve failed');
+            return res.json();
+        },
+        getWebhookLogs: async (): Promise<any[]> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/webhook-logs`);
+            if (!res.ok) return [];
+            return res.json();
+        },
+    },
+
+    customers: {
+        getAll: async (params?: { role?: string; search?: string }): Promise<any[]> => {
+            const q = new URLSearchParams();
+            if (params?.role) q.set('role', params.role);
+            if (params?.search) q.set('search', params.search);
+            const res = await fetch(`${API_BASE_URL}/api/v1/users?${q.toString()}`);
+            if (!res.ok) throw new Error('Lỗi tải danh sách khách hàng');
+            return res.json();
+        },
+        getById: async (id: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users/${id}`);
+            if (!res.ok) throw new Error('Lỗi tải thông tin khách hàng');
+            return res.json();
+        },
+        update: async (id: number, data: { name?: string; email?: string; phone?: string; role?: string; wallet_balance?: number }): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (!res.ok) throw new Error('Cập nhật thất bại');
+            return res.json();
+        },
+        delete: async (id: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users/${id}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('Xóa tài khoản thất bại');
+            return res.json();
+        },
+        topup: async (id: number, amount: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users/${id}/topup?amount=${amount}`, { method: 'POST' });
+            if (!res.ok) throw new Error('Nạp tiền thất bại');
+            return res.json();
+        },
+        create: async (data: any): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || 'Tạo tài khoản thất bại');
+            }
+            return res.json();
+        },
+        // --- MANUAL TOPUP ---
+        submitTopupRequest: async (userId: number, data: { amount: number; proof_url?: string; note?: string }): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/users/${userId}/topup-request`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (!res.ok) throw new Error('Gửi yêu cầu nạp tiền thất bại');
+            return res.json();
+        },
+        getPendingTopups: async (): Promise<any[]> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/admin/topup-requests`);
+            if (!res.ok) throw new Error('Lỗi tải danh sách nạp tiền');
+            return res.json();
+        },
+        approveTopup: async (txId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/admin/topup-requests/${txId}/approve`, { method: 'POST' });
+            if (!res.ok) throw new Error('Duyệt nạp tiền thất bại');
+            return res.json();
+        },
+        rejectTopup: async (txId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/admin/topup-requests/${txId}/reject`, { method: 'POST' });
+            if (!res.ok) throw new Error('Từ chối nạp tiền thất bại');
+            return res.json();
+        }
+    },
+
+    matchmaking: {
+        getMatches: async (): Promise<any[]> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/matches`);
+            if (!res.ok) throw new Error('Failed to fetch matches');
+            return res.json();
+        },
+        createMatch: async (data: any): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/matches`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (!res.ok) throw new Error('Create match failed');
+            return res.json();
+        },
+        joinMatch: async (matchId: number, requesterId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/matches/${matchId}/join`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requester_id: requesterId })
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || 'Join match failed');
+            }
+            return res.json();
+        },
+        leaveMatch: async (matchId: number, requesterId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/matches/${matchId}/leave`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requester_id: requesterId })
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || 'Lỗi khi rời phòng');
+            }
+            return res.json();
+        },
+        cancelMatch: async (matchId: number, authorId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/matches/${matchId}?user_id=${authorId}`, {
+                method: 'DELETE'
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || 'Lỗi khi hủy trận');
+            }
+            return res.json();
+        },
+        approveRequest: async (requestId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/match-requests/${requestId}/approve`, { method: 'POST' });
+            if (!res.ok) throw new Error('Approve request failed');
+            return res.json();
+        },
+        rejectRequest: async (requestId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/match-requests/${requestId}/reject`, { method: 'POST' });
+            if (!res.ok) throw new Error('Reject request failed');
+            return res.json();
+        },
+        getNotifications: async (userId: number): Promise<any[]> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/notifications/${userId}`);
+            if (!res.ok) throw new Error('Failed to fetch notifications');
+            return res.json();
+        },
+        readNotification: async (notifId: number): Promise<any> => {
+            const res = await fetch(`${API_BASE_URL}/api/v1/notifications/${notifId}/read`, { method: 'PUT' });
+            if (!res.ok) throw new Error('Read notification failed');
             return res.json();
         }
     },

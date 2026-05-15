@@ -23,6 +23,7 @@ export default function ShopPage() {
   const [walletPin, setWalletPin] = useState<string | null>(null);
   const [showPinAuth, setShowPinAuth] = useState(false);
   const [pinInput, setPinInput] = useState('');
+  const [bankSettings, setBankSettings] = useState<any>(null);
 
   useEffect(() => {
     fetchProducts();
@@ -37,6 +38,8 @@ export default function ShopPage() {
 
     const storedPin = localStorage.getItem('wallet_pin');
     if (storedPin) setWalletPin(storedPin);
+    
+    api.bank.get().then(setBankSettings).catch(() => {});
   }, []);
 
   const fetchProducts = async () => {
@@ -300,6 +303,34 @@ export default function ShopPage() {
                             </div>
                         </button>
                     </div>
+
+                    {paymentMethod === 'VIETQR' && (
+                        <div className="flex flex-col items-center gap-4 p-4 bg-emerald-50 rounded-2xl border border-emerald-100 animate-in fade-in slide-in-from-bottom-2">
+                            {bankSettings ? (
+                                <>
+                                    <div className="bg-white p-3 rounded-2xl shadow-sm border border-emerald-100">
+                                        <img 
+                                            src={`https://img.vietqr.io/image/${bankSettings.bank_code}-${bankSettings.account_number}-compact2.png?amount=${total}&addInfo=ORDER-${Date.now().toString().slice(-6)}&accountName=${encodeURIComponent(bankSettings.account_name)}`} 
+                                            alt="VietQR" 
+                                            className="w-48 h-48 object-contain"
+                                        />
+                                    </div>
+                                    <div className="text-center">
+                                        <p className="text-xs font-bold text-emerald-700 uppercase tracking-wider">{bankSettings.bank_name}</p>
+                                        <p className="font-black text-slate-800">{bankSettings.account_number}</p>
+                                        <p className="text-xs text-slate-500">{bankSettings.account_name}</p>
+                                    </div>
+                                    <div className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md animate-pulse">
+                                        Vui lòng quét mã để thanh toán
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="text-amber-600 text-sm font-semibold p-4 text-center">
+                                    ⚠️ Chưa cài đặt thông tin ngân hàng thụ hưởng.
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                     {paymentMethod === 'WALLET' && walletBalance < total && (
                         <div className="p-3 bg-rose-50 text-rose-700 text-sm font-semibold rounded-xl text-center border border-rose-200">
