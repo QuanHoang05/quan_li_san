@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Plus, X, Ban, ChevronLeft, ChevronRight, List, Edit, Trash2, ShieldAlert, DollarSign, History, BarChart2, CheckCircle, Trash, QrCode, Banknote, Globe, Eye, ThumbsUp } from 'lucide-react';
+import { Plus, X, Ban, ChevronLeft, ChevronRight, List, Edit, Trash2, ShieldAlert, DollarSign, History, BarChart2, CheckCircle, Trash, QrCode, Banknote, Zap, Clock } from 'lucide-react';
 import { api, BankSettings } from '@/lib/api';
 import toast from 'react-hot-toast';
 import PricingModal from '@/components/court/PricingModal';
@@ -34,6 +34,7 @@ export default function BookingsShiftPage() {
     const [courts, setCourts] = useState<any[]>([]);
     const [bookings, setBookings] = useState<any[]>([]);
     const [blocks, setBlocks] = useState<any[]>([]);
+    const [onlineBookings, setOnlineBookings] = useState<any[]>([]);
     
     // UI State
     const [selectedCourtId, setSelectedCourtId] = useState<number | null>(null);
@@ -52,7 +53,6 @@ export default function BookingsShiftPage() {
     const [historyModal, setHistoryModal] = useState<{open: boolean, court: any | null}>({open: false, court: null});
     const [statsModal, setStatsModal] = useState(false);
     const [bankSettings, setBankSettings] = useState<BankSettings | null>(null);
-    const [proofModal, setProofModal] = useState<{open: boolean, url: string | null, bookingId: number | null}>({open: false, url: null, bookingId: null});
     
     // Forms
     const [bookingForm, setBookingForm] = useState({
@@ -68,11 +68,29 @@ export default function BookingsShiftPage() {
         reason: 'Bảo trì sân', start_time:'', end_time:''
     });
 
+    // Auto-reload countdown
+    const [countdown, setCountdown] = useState(60);
+
     useEffect(() => { 
         fetchData();
         setSelectedShiftIds([]);
         api.bank.get().then(b => setBankSettings(b)).catch(() => {});
     }, [currentDate, selectedCourtId]);
+
+    // Auto-reload mỗi 60 giây
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setCountdown(prev => {
+                if (prev <= 1) {
+                    fetchData();
+                    return 60;
+                }
+                return prev - 1;
+            });
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [currentDate, selectedCourtId]);
+
 
     // Tự động chuyển sang Thanh toán hết nếu là khách vãng lai (không tên, không SĐT)
     useEffect(() => {
@@ -130,6 +148,7 @@ export default function BookingsShiftPage() {
             setCourts(data.courts);
             setBookings(data.bookings);
             setBlocks(data.blocks);
+            setOnlineBookings(data.online_bookings || []);
             if (data.courts.length > 0 && selectedCourtId === null) setSelectedCourtId(data.courts[0].id);
         } catch (err) { toast.error("Không thể tải Lịch Sân!"); } 
         finally { setLoading(false); }
@@ -273,6 +292,15 @@ export default function BookingsShiftPage() {
         );
         if (booking) return { type: 'booked', data: booking };
 
+        const ob = onlineBookings.find(b => {
+            if (b.court_id !== selectedCourtId) return false;
+            try {
+                const sids = JSON.parse(b.shift_ids);
+                return sids.includes(shift.id);
+            } catch { return false; }
+        });
+        if (ob) return { type: 'booked', data: { ...ob, isOnline: true }, isOnline: true };
+
         const block = blocks.find(b => 
             b.court_id === selectedCourtId &&
             new Date(b.start_time).getTime() < eTime &&
@@ -298,8 +326,13 @@ export default function BookingsShiftPage() {
                         <span className="w-2.5 h-2.5 rounded bg-emerald-500"></span> Đã thanh toán 
                         <span className="w-2.5 h-2.5 rounded bg-yellow-500"></span> Đã đặt cọc 
                         <span className="w-2.5 h-2.5 rounded bg-rose-500"></span> Chưa thanh toán
+                        <span className="ml-2 inline-flex items-center gap-1.5 text-xs font-semibold bg-slate-100 px-2.5 py-1 rounded-full text-slate-500">
+                            <span className={`w-1.5 h-1.5 rounded-full ${countdown <= 10 ? 'bg-orange-400 animate-pulse' : 'bg-emerald-400'}`}></span>
+                            Tự làm mới sau {countdown}s
+                        </span>
                     </p>
                 </div>
+
                 {!isManageCourts ? (
                     <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-xl border border-slate-200 shadow-sm">
                         <button onClick={() => changeDate(-1)} className="p-2 text-slate-600 hover:text-slate-900 transition-colors"><ChevronLeft size={18} /></button>
@@ -396,13 +429,13 @@ export default function BookingsShiftPage() {
                                         <div className="flex justify-between items-start w-full ml-1">
                                             <div className="flex flex-col gap-1">
                                                 <span className="font-bold text-slate-800 text-[15px]">{shift.start} - {shift.end}</span>
-                                                {status.data.is_online && (
-                                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
-                                                        <Globe size={9}/> Online
+                                                {status.isOnline && (
+                                                    <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-[10px] font-bold w-max flex items-center gap-1">
+                                                        <Zap size={10}/> Online
                                                     </span>
                                                 )}
                                             </div>
-                                            <StatusBadge status={status.data.payment_status}/>
+                                            <StatusBadge status={status.data.isOnline ? (status.data.status === 'confirmed' ? 'Fully_Paid' : 'Unpaid') : status.data.payment_status}/>
                                         </div>
                                         <div className="flex flex-col mt-3 gap-1.5 ml-1">
                                             <div className="font-bold text-slate-900 text-base">{status.data.guest_name || "Khách Vãng Lai"}</div>
@@ -465,12 +498,27 @@ export default function BookingsShiftPage() {
                                         <div className="flex items-center justify-center flex-1 my-2 flex-col">
                                             {isSelected ? (
                                                 <span className="text-emerald-600 font-bold text-xs uppercase tracking-tight bg-emerald-100 px-2 py-1 rounded">Đang chọn</span>
-                                            ) : (
-                                                <>
-                                                    <Plus size={24} className="mb-1 text-slate-300 group-hover:text-slate-400" />
-                                                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 group-hover:text-slate-400">Đặt Ca Mới</span>
-                                                </>
-                                            )}
+                                            ) : (() => {
+                                                const now = new Date(new Date().getTime() + 7*3600*1000);
+                                                const currentHms = now.toISOString().split('T')[1].split('.')[0];
+                                                const shiftEndHms = shift.end === '23:59' ? '23:59:59' : `${shift.end}:00`;
+                                                const isPast = currentDate < todayStr || (currentDate === todayStr && shiftEndHms < currentHms);
+                                                
+                                                if (isPast) {
+                                                    return (
+                                                        <>
+                                                            <Clock size={20} className="mb-1 text-slate-300 opacity-40" />
+                                                            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300">Hết Giờ</span>
+                                                        </>
+                                                    );
+                                                }
+                                                return (
+                                                    <>
+                                                        <Plus size={24} className="mb-1 text-slate-300 group-hover:text-slate-400" />
+                                                        <span className="text-xs font-semibold uppercase tracking-wider text-slate-300 group-hover:text-slate-400">Đặt Ca Mới</span>
+                                                    </>
+                                                );
+                                            })()}
                                         </div>
                                     </div>
                                 );
@@ -668,13 +716,12 @@ export default function BookingsShiftPage() {
                             </div>
                             <div>
                                 <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Loại Sân Thể Thao</label>
-                                <input list="courtTypes" value={courtForm.type} onChange={e=>setCourtForm({...courtForm, type: e.target.value})} className="w-full border border-slate-200 focus:border-indigo-400 p-2.5 rounded-md font-medium text-slate-800 shadow-sm focus:outline-none bg-white"/>
-                                <datalist id="courtTypes">
+                                <select value={courtForm.type} onChange={e=>setCourtForm({...courtForm, type: e.target.value})} className="w-full border border-slate-200 focus:border-indigo-400 p-2.5 rounded-md font-medium text-slate-800 shadow-sm focus:outline-none bg-white">
                                     <option value="Cầu lông">Cầu lông</option>
                                     <option value="Bóng đá">Bóng đá</option>
                                     <option value="Tennis">Tennis</option>
                                     <option value="Pickleball">Pickleball</option>
-                                </datalist>
+                                </select>
                             </div>
                             <div className="flex gap-4">
                                 <div className="flex-1">
@@ -716,13 +763,16 @@ export default function BookingsShiftPage() {
                 </div>
             )}
             
+            
             {/* PAYMENT CONFIRMATION MODAL */}
             {paymentModal.open && paymentModal.data && (() => {
                 const b = paymentModal.data;
                 const court = courts.find(c => c.id === b.court_id);
+                const isOnline = !!b.isOnline;
+                const proofUrl = b.proof_url;
 
-                // Tìm các ca cùng khách chưa thanh toán để gộp
-                const related = bookings.filter(x =>
+                // Tìm các ca cùng khách chưa thanh toán để gộp (chỉ cho booking thường)
+                const related = isOnline ? [] : bookings.filter(x =>
                     x.guest_name === b.guest_name &&
                     (b.guest_phone ? x.guest_phone === b.guest_phone : true) &&
                     x.payment_status !== 'Fully_Paid'
@@ -742,12 +792,31 @@ export default function BookingsShiftPage() {
                 const groupRemaining = Math.max(0, totalGroupPrice - totalGroupDeposit);
 
                 // Build QR URL
-                const orderRef = `SAN-${b.id}-${Date.now().toString().slice(-4)}`;
+                const orderRef = isOnline ? b.payment_ref : `SAN-${b.id}-${Date.now().toString().slice(-4)}`;
                 const qrNote = `${orderRef} ${b.guest_name || 'Khach vang lai'} ${court?.name || ''}`.slice(0, 50);
-                const safeBankCode = bankSettings?.bank_code === 'MBB' ? 'MB' : (bankSettings?.bank_code === 'VTB' ? 'ICB' : bankSettings?.bank_code);
                 const qrUrl = bankSettings
-                    ? `https://img.vietqr.io/image/${safeBankCode}-${bankSettings.account_number}-compact2.png?amount=${Math.round(groupRemaining)}&addInfo=${encodeURIComponent(qrNote)}&accountName=${encodeURIComponent(bankSettings.account_name)}`
+                    ? `https://img.vietqr.io/image/${bankSettings.bank_code}-${bankSettings.account_number}-compact2.png?amount=${Math.round(isOnline ? b.total_amount : groupRemaining)}&addInfo=${encodeURIComponent(qrNote)}&accountName=${encodeURIComponent(bankSettings.account_name)}`
                     : null;
+
+                const handleConfirmPayment = async () => {
+                    try {
+                        if (isOnline) {
+                            await api.onlineBookings.manualApprove(b.id);
+                            toast.success(`Đã xác nhận đặt sân Online cho ${b.guest_name}!`);
+                        } else {
+                            const related2 = bookings.filter(x =>
+                                x.guest_name === b.guest_name &&
+                                (b.guest_phone ? x.guest_phone === b.guest_phone : true) &&
+                                x.payment_status !== 'Fully_Paid'
+                            );
+                            await Promise.all(related2.map(item => api.bookings.update(item.id, { payment_status: 'Fully_Paid' })));
+                            toast.success(`Đã thu tiền gộp cho ${related2.length} ca!`);
+                        }
+                        setPaymentModal({open: false, data: null});
+                        setPaymentTab('cash');
+                        fetchData();
+                    } catch { toast.error('Lỗi xác nhận thanh toán'); }
+                };
 
                 return (
                     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[200] flex justify-center items-center p-4">
@@ -757,7 +826,7 @@ export default function BookingsShiftPage() {
                                 <button onClick={() => { setPaymentModal({open: false, data: null}); setPaymentTab('cash'); }} className="text-slate-400 hover:text-slate-700 bg-slate-50 hover:bg-slate-100 p-1.5 rounded transition-colors"><X size={18}/></button>
                             </div>
 
-                            <div className="p-5 bg-slate-50 flex flex-col gap-4">
+                            <div className="p-5 bg-slate-50 flex flex-col gap-4 max-h-[80vh] overflow-y-auto">
                                 {/* Customer info */}
                                 <div className="bg-white rounded-lg border border-slate-200 p-4 flex flex-col gap-1.5 text-sm shadow-sm">
                                     <div className="flex justify-between"><span className="text-slate-500">Khách hàng</span><span className="font-bold text-slate-800">{b.guest_name || 'Khách Vãng Lai'}</span></div>
@@ -768,21 +837,26 @@ export default function BookingsShiftPage() {
                                 {/* Amount breakdown */}
                                 <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 flex flex-col gap-2">
                                     <div className="flex justify-between text-xs uppercase tracking-wider text-emerald-600 font-bold">
-                                        <span>Chi tiết ({related.length} ca)</span>
+                                        <span>Chi tiết {isOnline ? "(Online)" : `(${related.length} ca)`}</span>
                                     </div>
                                     <div className="space-y-1">
-                                        {related.map(r => (
+                                        {isOnline ? (
+                                            <div className="flex justify-between text-[11px] text-emerald-800/70 italic">
+                                                <span>Ca đặt Online</span>
+                                                <span>{(b.total_amount || 0).toLocaleString()}đ</span>
+                                            </div>
+                                        ) : related.map(r => (
                                             <div key={r.id} className="flex justify-between text-[11px] text-emerald-800/70 italic">
                                                 <span>Ca {new Date(r.start_time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>
                                                 <span>{((new Date(r.end_time).getTime() - new Date(r.start_time).getTime())/(1000*3600) * (courts.find(ct=>ct.id===r.court_id)?.price_per_hour||0)).toLocaleString()}đ</span>
                                             </div>
                                         ))}
                                     </div>
-                                    <div className="flex justify-between pt-1 border-t border-emerald-100"><span className="text-emerald-700 font-medium">Tổng:</span><span className="font-bold text-emerald-800">{totalGroupPrice.toLocaleString()}đ</span></div>
-                                    {totalGroupDeposit > 0 && <div className="flex justify-between"><span className="text-emerald-700 font-medium">Đã cọc:</span><span className="font-semibold text-emerald-700">- {totalGroupDeposit.toLocaleString()}đ</span></div>}
+                                    <div className="flex justify-between pt-1 border-t border-emerald-100"><span className="text-emerald-700 font-medium">Tổng:</span><span className="font-bold text-emerald-800">{(isOnline ? b.total_amount : totalGroupPrice).toLocaleString()}đ</span></div>
+                                    {!isOnline && totalGroupDeposit > 0 && <div className="flex justify-between"><span className="text-emerald-700 font-medium">Đã cọc:</span><span className="font-semibold text-emerald-700">- {totalGroupDeposit.toLocaleString()}đ</span></div>}
                                     <div className="flex justify-between pt-2 border-t-2 border-emerald-300">
                                         <span className="font-black text-emerald-900 uppercase text-sm">Cần Thu</span>
-                                        <span className="font-black text-emerald-900 text-2xl">{groupRemaining.toLocaleString()}đ</span>
+                                        <span className="font-black text-emerald-900 text-2xl">{(isOnline ? b.total_amount : groupRemaining).toLocaleString()}đ</span>
                                     </div>
                                 </div>
 
@@ -804,19 +878,38 @@ export default function BookingsShiftPage() {
                                     </div>
 
                                     {paymentTab === 'cash' ? (
-                                        <div className="text-center py-3 text-slate-500 text-sm bg-white rounded-lg border border-slate-200">
-                                            ✅ Thu đủ <strong className="text-slate-800">{groupRemaining.toLocaleString()}đ</strong> tiền mặt rồi xác nhận.
+                                        <div className="flex flex-col gap-3 p-3 bg-white rounded-lg border border-slate-200 shadow-sm">
+                                            <div className="text-sm text-slate-600 flex items-start gap-2">
+                                                <input type="checkbox" id="confirm-cash" className="mt-1 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500" />
+                                                <label htmlFor="confirm-cash" className="cursor-pointer font-medium">
+                                                    Thu đủ <strong className="text-slate-800">{(isOnline ? b.total_amount : groupRemaining).toLocaleString()}đ</strong> tiền mặt rồi xác nhận.
+                                                </label>
+                                            </div>
                                         </div>
                                     ) : (
                                         <div className="flex flex-col items-center gap-2 py-3 bg-white rounded-lg border border-slate-200">
-                                            {qrUrl ? (
+                                            {qrUrl || isOnline ? (
                                                 <>
-                                                    <img src={qrUrl} alt="VietQR" className="w-40 h-40 object-contain border border-slate-200 rounded-lg bg-white p-1"/>
+                                                    {isOnline && proofUrl ? (
+                                                        <div className="w-full px-4 mb-2">
+                                                            <div className="text-[10px] font-bold text-slate-400 uppercase mb-1 flex items-center gap-1">
+                                                                <Zap size={10}/> Ảnh minh chứng của khách
+                                                            </div>
+                                                            <div className="relative aspect-video rounded-lg overflow-hidden border border-slate-200 bg-slate-100 group">
+                                                                <img src={proofUrl} alt="Proof" className="w-full h-full object-contain"/>
+                                                                <a href={proofUrl} target="_blank" className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-xs font-bold transition-opacity">
+                                                                    Xem ảnh đầy đủ
+                                                                </a>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <img src={qrUrl} alt="VietQR" className="w-40 h-40 object-contain border border-slate-200 rounded-lg bg-white p-1"/>
+                                                    )}
                                                     <div className="text-center text-xs text-slate-500 space-y-0.5">
-                                                        <div className="font-bold text-slate-700">{bankSettings?.bank_name} — {bankSettings?.account_number}</div>
+                                                        <div className="font-bold text-slate-700">{bankSettings?.bank_name || "Ngân hàng"} — {bankSettings?.account_number || "..."}</div>
                                                         <div>{bankSettings?.account_name}</div>
-                                                        <div className="text-emerald-600 font-semibold text-sm">{groupRemaining.toLocaleString()}đ</div>
-                                                        <div className="text-slate-400 text-[10px]">Nội dung: {qrNote}</div>
+                                                        <div className="text-emerald-600 font-semibold text-sm">{(isOnline ? b.total_amount : groupRemaining).toLocaleString()}đ</div>
+                                                        {!isOnline && <div className="text-slate-400 text-[10px]">Nội dung: {qrNote}</div>}
                                                     </div>
                                                 </>
                                             ) : (
@@ -829,69 +922,31 @@ export default function BookingsShiftPage() {
                                     )}
                                 </div>
 
-                                {/* Proof image section for online bookings */}
-                                {b.proof_image_url && (
-                                    <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
-                                        <div className="text-xs font-bold text-indigo-700 mb-2 flex items-center gap-1.5">
-                                            <Eye size={12}/> Ảnh minh chứng của khách
-                                        </div>
-                                        <div className="flex items-center gap-3">
-                                            <img
-                                                src={b.proof_image_url}
-                                                alt="Minh chứng"
-                                                className="w-16 h-16 object-cover rounded-lg border border-indigo-200 cursor-pointer hover:opacity-80 transition-opacity"
-                                                onClick={() => setProofModal({open: true, url: b.proof_image_url, bookingId: b.id})}
-                                            />
-                                            <div className="flex-1">
-                                                <p className="text-xs text-indigo-700 font-medium">Khách đã gửi ảnh thanh toán</p>
-                                                <button
-                                                    onClick={() => setProofModal({open: true, url: b.proof_image_url, bookingId: b.id})}
-                                                    className="text-[11px] text-indigo-600 underline mt-0.5"
-                                                >Xem ảnh đầy đủ</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-
                                 {/* Actions */}
                                 <div className="flex gap-3">
                                     <Button type="button" variant="ghost" onClick={() => { setPaymentModal({open: false, data: null}); setPaymentTab('cash'); }} className="font-semibold text-slate-600 flex-1 hover:bg-slate-200 border border-slate-300">Đóng</Button>
-                                    {b.proof_image_url && b.payment_status !== 'Fully_Paid' && (
-                                        <Button type="button" onClick={async () => {
-                                            try {
-                                                await api.onlineBookings.manualApprove(b.id);
-                                                toast.success('Đã duyệt thanh toán thủ công!');
-                                                setPaymentModal({open: false, data: null});
-                                                fetchData();
-                                            } catch { toast.error('Lỗi duyệt thủ công'); }
-                                        }} className="flex-[0.6] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow gap-1.5 h-12">
-                                            <ThumbsUp size={16}/> Duyệt
+                                    
+                                    {isOnline ? (
+                                        <>
+                                            <Button type="button" onClick={handleConfirmPayment} className="flex-1 font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg gap-2 h-12">
+                                                <History size={18}/> Duyệt
+                                            </Button>
+                                            <Button type="button" onClick={handleConfirmPayment} className="flex-1 font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg gap-2 h-12">
+                                                <CheckCircle size={18}/> Xác Nhận Đã Thu
+                                            </Button>
+                                        </>
+                                    ) : (
+                                        <Button type="button" onClick={handleConfirmPayment} className="flex-1 font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg gap-2 h-12">
+                                            <CheckCircle size={18}/> Xác Nhận Đã Thu
                                         </Button>
                                     )}
-                                    <Button type="button" onClick={async () => {
-                                        try {
-                                            const related2 = bookings.filter(x =>
-                                                x.guest_name === b.guest_name &&
-                                                (b.guest_phone ? x.guest_phone === b.guest_phone : true) &&
-                                                x.payment_status !== 'Fully_Paid'
-                                            );
-                                            await Promise.all(related2.map(item => api.bookings.update(item.id, { payment_status: 'Fully_Paid' })));
-                                            toast.success(`Đã thu tiền gộp cho ${related2.length} ca!`);
-                                            setPaymentModal({open: false, data: null});
-                                            setPaymentTab('cash');
-                                            fetchData();
-                                        } catch { toast.error('Lỗi xác nhận thanh toán gộp'); }
-                                    }} className="flex-1 font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg gap-2 h-12">
-                                        <CheckCircle size={18}/> Xác Nhận Đã Thu
-                                    </Button>
                                 </div>
                             </div>
                         </Card>
                     </div>
                 );
             })()}
-            {/* PRICING MODAL */}
-            {pricingModal.open && pricingModal.court && (
+                {pricingModal.open && pricingModal.court && (
                 <PricingModal court={pricingModal.court} onClose={() => setPricingModal({open: false, court: null})} />
             )}
 
@@ -903,38 +958,6 @@ export default function BookingsShiftPage() {
             {/* STATS MODAL */}
             {statsModal && (
                 <StatsModal courts={courts} onClose={() => setStatsModal(false)} />
-            )}
-
-            {/* PROOF IMAGE LIGHTBOX */}
-            {proofModal.open && proofModal.url && (
-                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[300] flex items-center justify-center p-4" onClick={() => setProofModal({open: false, url: null, bookingId: null})}>
-                    <div className="relative max-w-lg w-full" onClick={e => e.stopPropagation()}>
-                        <div className="bg-white rounded-2xl overflow-hidden shadow-2xl">
-                            <div className="p-4 flex justify-between items-center border-b border-slate-100">
-                                <h4 className="font-bold text-slate-800">Ảnh minh chứng chuyển khoản</h4>
-                                <button onClick={() => setProofModal({open: false, url: null, bookingId: null})} className="p-1.5 hover:bg-slate-100 rounded-full">
-                                    <X size={18} className="text-slate-500"/>
-                                </button>
-                            </div>
-                            <img src={proofModal.url} alt="Minh chứng" className="w-full max-h-[70vh] object-contain p-2"/>
-                            {proofModal.bookingId && (
-                                <div className="p-4 border-t border-slate-100">
-                                    <Button onClick={async () => {
-                                        try {
-                                            await api.onlineBookings.manualApprove(proofModal.bookingId!);
-                                            toast.success('Đã duyệt thanh toán thủ công!');
-                                            setProofModal({open: false, url: null, bookingId: null});
-                                            setPaymentModal({open: false, data: null});
-                                            fetchData();
-                                        } catch { toast.error('Lỗi duyệt thủ công'); }
-                                    }} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white gap-2">
-                                        <ThumbsUp size={16}/> Duyệt Thanh Toán Thủ Công
-                                    </Button>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
             )}
         </div>
     );

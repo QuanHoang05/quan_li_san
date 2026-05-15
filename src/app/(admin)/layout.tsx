@@ -1,19 +1,19 @@
 import React from 'react';
 import Link from 'next/link';
 import { cookies } from 'next/headers';
-import {
-    LayoutDashboard,
-    CalendarDays,
-    ShoppingCart,
-    Package,
-    Users,
-    TrendingUp,
-    Settings,
-    Bell,
-    Menu,
-    Search,
-    LogOut
+import { 
+  LayoutDashboard, 
+  CalendarDays, 
+  ShoppingCart, 
+  Package, 
+  Users, 
+  TrendingUp, 
+  Settings,
+  Menu,
+  Search,
+  LogOut
 } from 'lucide-react';
+import NotificationBell from '@/components/NotificationBell';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
     // Read the simulated role from HTTP cookies
@@ -31,7 +31,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                         <h2 className="text-xl font-bold tracking-tight m-0 text-slate-800">QuanLiSan</h2>
                     </div>
                 </div>
-
+                
                 <div className="px-4 pt-6">
                     <p className="text-xs font-semibold text-slate-400 mb-3 px-3 tracking-wider">QUẢN LÝ CHÍNH</p>
                     <nav className="flex flex-col gap-1">
@@ -59,7 +59,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                         </Link>
                         <Link href="/customers" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 font-medium text-sm transition-colors hover:bg-slate-100 hover:text-slate-900">
                             <Users size={20} />
-                            <span>Khách hàng & Cộng đồng</span>
+                            <span>Khách hàng &amp; Cộng đồng</span>
                         </Link>
                         {isAdmin && (
                             <Link href="/reports" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 font-medium text-sm transition-colors hover:bg-slate-100 hover:text-slate-900">
@@ -67,12 +67,15 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                                 <span>Báo cáo doanh thu</span>
                             </Link>
                         )}
-                        {isAdmin && (
-                            <Link href="/settings" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 font-medium text-sm transition-colors hover:bg-slate-100 hover:text-slate-900">
-                                <Settings size={20} />
-                                <span>Thiết lập hệ thống</span>
-                            </Link>
-                        )}
+                    </nav>
+                </div>
+
+                <div className="px-4 pt-6 mt-auto pb-4">
+                    <nav className="flex flex-col gap-1">
+                        <Link href="/settings" className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-500 font-medium text-sm transition-colors hover:bg-slate-100 hover:text-slate-900">
+                            <Settings size={20} />
+                            <span>Thiết lập hệ thống</span>
+                        </Link>
                     </nav>
                 </div>
             </aside>
@@ -90,12 +93,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                             <input type="text" placeholder="Tìm kiếm sđt khách, lịch đặt..." className="bg-transparent border-none w-full text-sm text-slate-900 outline-none" />
                         </div>
                     </div>
-
+                    
                     <div className="flex items-center gap-4">
-                        <button className="w-9 h-9 flex items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900 transition-colors relative">
-                            <Bell size={20} />
-                            <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-orange-500 rounded-full border-2 border-white"></span>
-                        </button>
+                        <NotificationBell userRole={userRole} />
                         <div className="flex items-center gap-3 px-2 py-1 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors">
                             <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center font-semibold">
                                 {isAdmin ? 'A' : 'S'}

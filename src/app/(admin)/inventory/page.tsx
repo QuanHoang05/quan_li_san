@@ -12,11 +12,11 @@ const UNITS = ['cái', 'chai', 'đôi', 'gói', 'lộ', 'hộp', 'giờ', 'tuầ
 const REASONS = ['Hết hạn', 'Hư hỏng tự nhiên', 'Khách làm hỏng'];
 
 const CATEGORY_META: Record<string, { icon: React.ReactNode; color: string; bg: string; border: string }> = {
-    'Nước uống':     { icon: <Droplets size={28}/>,        color: 'text-sky-600',     bg: 'bg-sky-50',     border: 'border-sky-300' },
-    'Thức ăn':       { icon: <UtensilsCrossed size={28}/>,  color: 'text-orange-600',  bg: 'bg-orange-50',  border: 'border-orange-300' },
-    'Dụng cụ bán':   { icon: <Tag size={28}/>,              color: 'text-violet-600',  bg: 'bg-violet-50',  border: 'border-violet-300' },
-    'Dụng cụ cho thuê': { icon: <Wrench size={28}/>,        color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-300' },
-    'Khác':          { icon: <MoreHorizontal size={28}/>,   color: 'text-slate-600',   bg: 'bg-slate-50',   border: 'border-slate-300' },
+    'Nước uống': { icon: <Droplets size={28} />, color: 'text-sky-600', bg: 'bg-sky-50', border: 'border-sky-300' },
+    'Thức ăn': { icon: <UtensilsCrossed size={28} />, color: 'text-orange-600', bg: 'bg-orange-50', border: 'border-orange-300' },
+    'Dụng cụ bán': { icon: <Tag size={28} />, color: 'text-violet-600', bg: 'bg-violet-50', border: 'border-violet-300' },
+    'Dụng cụ cho thuê': { icon: <Wrench size={28} />, color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-emerald-300' },
+    'Khác': { icon: <MoreHorizontal size={28} />, color: 'text-slate-600', bg: 'bg-slate-50', border: 'border-slate-300' },
 };
 
 export default function InventoryPage() {
@@ -44,11 +44,11 @@ export default function InventoryPage() {
     const [importing, setImporting] = useState(false);
 
     // Stats state
-    const [statsPeriod, setStatsPeriod] = useState<'day'|'range'|'month'|'year'>('month');
+    const [statsPeriod, setStatsPeriod] = useState<'day' | 'range' | 'month' | 'year'>('month');
     const [statsValue, setStatsValue] = useState(() => {
-        const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+        const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     });
-    const [statsExtraFilter, setStatsExtraFilter] = useState<{date_from?: string; date_to?: string; category?: string}>({});
+    const [statsExtraFilter, setStatsExtraFilter] = useState<{ date_from?: string; date_to?: string; category?: string }>({});
     const [statsData, setStatsData] = useState<any>(null);
     const [statsLoading, setStatsLoading] = useState(false);
 
@@ -61,7 +61,7 @@ export default function InventoryPage() {
     const [isUploading, setIsUploading] = useState(false);
 
     // Form state
-    const initialFormState = { name: '', category: CATEGORIES[0], price: '', cost_price: '', stock_quantity: '', image_url: '', unit: 'cái', min_stock: '5'};
+    const initialFormState = { name: '', category: CATEGORIES[0], price: '', cost_price: '', stock_quantity: '', image_url: '', unit: 'cái', min_stock: '5' };
     const [formData, setFormData] = useState(initialFormState);
 
     // Log history filter
@@ -215,7 +215,7 @@ export default function InventoryPage() {
             product_name: '',
             category: cat,
             unit: 'cái',
-        image_url: '',
+            image_url: '',
         });
         setImportStep('form');
     };
@@ -254,7 +254,7 @@ export default function InventoryPage() {
                 is_admin: isAdmin,
             };
             const res = await api.inventory.import(payload);
-            const msg = res.status === 'PENDING'
+            const msg = res.status?.toUpperCase() === 'PENDING'
                 ? 'Gửi yêu cầu thành công, chờ chủ duyệt!'
                 : `Nhập kho thành công! Tồn mới: ${res.new_stock}`;
             toast.success(msg);
@@ -321,6 +321,11 @@ export default function InventoryPage() {
                     <h2 className="text-2xl font-bold text-slate-800">Quản lý Kho hàng</h2>
                     <p className="text-slate-500 mt-1">Phân loại, kiểm kê, chỉnh sửa và xử lý rủi ro xuất kho.</p>
                 </div>
+                {isAdmin && !['Nhập Kho', 'Lịch sử lỗi', 'Thống Kê'].includes(activeTab) && (
+                    <Button onClick={openCreateModal} className="bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-2 shadow-md shadow-emerald-500/20">
+                        <Plus size={18} /> Thêm Sản Phẩm Mới
+                    </Button>
+                )}
             </div>
 
             {/* TABS */}
@@ -329,14 +334,13 @@ export default function InventoryPage() {
                     <button
                         key={cat}
                         onClick={() => handleTabChange(cat)}
-                        className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${
-                            activeTab === cat
+                        className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-2 ${activeTab === cat
                                 ? (cat === 'Lịch sử lỗi' ? 'bg-orange-500 text-white shadow-sm'
                                     : cat === 'Nhập Kho' ? 'bg-sky-600 text-white shadow-sm'
-                                    : cat === 'Thống Kê' ? 'bg-indigo-600 text-white shadow-sm'
-                                    : 'bg-white text-emerald-600 shadow-sm')
+                                        : cat === 'Thống Kê' ? 'bg-indigo-600 text-white shadow-sm'
+                                            : 'bg-white text-emerald-600 shadow-sm')
                                 : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'
-                        }`}
+                            }`}
                     >
                         {cat === 'Lịch sử lỗi' && <History size={16} />}
                         {cat === 'Nhập Kho' && <PackagePlus size={16} />}
@@ -348,14 +352,14 @@ export default function InventoryPage() {
 
             <Card className="overflow-hidden bg-white shadow-sm border border-slate-200">
                 <div className="overflow-x-auto">
-                                        {/* ============ NHẬP KHO ============ */}
+                    {/* ============ NHẬP KHO ============ */}
                     {activeTab === 'Nhập Kho' ? (
                         <div className="p-6">
                             {importStep === 'category' ? (
                                 /* BƯỚC 1: Chọn danh mục */
                                 <div>
                                     <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2 text-lg">
-                                        <PackagePlus size={20} className="text-sky-500"/> Nhập Hàng Vào Kho
+                                        <PackagePlus size={20} className="text-sky-500" /> Nhập Hàng Vào Kho
                                     </h3>
                                     <p className="text-slate-500 text-sm mb-6">Chọn nhóm hàng bạn muốn nhập vào kho:</p>
                                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
@@ -387,7 +391,7 @@ export default function InventoryPage() {
                                             onClick={() => { setImportStep('category'); setImportCategory(''); }}
                                             className="flex items-center gap-1.5 text-slate-400 hover:text-slate-700 text-sm font-medium transition-colors"
                                         >
-                                            <ArrowLeft size={16}/> Quay lại
+                                            <ArrowLeft size={16} /> Quay lại
                                         </button>
                                         <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold ${catMeta.bg} ${catMeta.color} border ${catMeta.border}`}>
                                             {catMeta.icon && <span className="scale-75">{catMeta.icon}</span>}
@@ -396,7 +400,7 @@ export default function InventoryPage() {
                                     </div>
 
                                     <h3 className="font-bold text-slate-800 mb-5 flex items-center gap-2">
-                                        <PackagePlus size={18} className="text-sky-500"/> Nhập Hàng — {importCategory}
+                                        <PackagePlus size={18} className="text-sky-500" /> Nhập Hàng — {importCategory}
                                     </h3>
 
                                     <form onSubmit={handleImport} className="flex flex-col gap-4">
@@ -426,7 +430,7 @@ export default function InventoryPage() {
                                                     <option key={p.id} value={p.id}>{p.name} (Tồn: {p.stock_quantity} {(p as any).unit})</option>
                                                 ))}
                                                 {filteredImportProducts.length === 0 && products.filter(p => p.category !== importCategory).map(p => (
-                                                    <option key={p.id} value={p.id} disabled style={{color: '#999'}}>
+                                                    <option key={p.id} value={p.id} disabled style={{ color: '#999' }}>
                                                         [{p.category}] {p.name}
                                                     </option>
                                                 ))}
@@ -444,7 +448,7 @@ export default function InventoryPage() {
                                                     <input
                                                         type="text"
                                                         value={importForm.product_name}
-                                                        onChange={e => setImportForm({...importForm, product_name: e.target.value})}
+                                                        onChange={e => setImportForm({ ...importForm, product_name: e.target.value })}
                                                         className="w-full border-2 border-emerald-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-emerald-400 bg-white"
                                                         placeholder="Nhập tên sản phẩm mới..."
                                                         required
@@ -455,7 +459,7 @@ export default function InventoryPage() {
                                                         <label className="text-xs font-bold text-emerald-700 uppercase tracking-widest mb-1.5 block">Danh Mục</label>
                                                         <select
                                                             value={importForm.category}
-                                                            onChange={e => setImportForm({...importForm, category: e.target.value})}
+                                                            onChange={e => setImportForm({ ...importForm, category: e.target.value })}
                                                             className="w-full border-2 border-emerald-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-emerald-400"
                                                         >
                                                             {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
@@ -465,7 +469,7 @@ export default function InventoryPage() {
                                                         <label className="text-xs font-bold text-emerald-700 uppercase tracking-widest mb-1.5 block">Đơn Vị Tính</label>
                                                         <select
                                                             value={importForm.unit}
-                                                            onChange={e => setImportForm({...importForm, unit: e.target.value})}
+                                                            onChange={e => setImportForm({ ...importForm, unit: e.target.value })}
                                                             className="w-full border-2 border-emerald-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:border-emerald-400"
                                                         >
                                                             {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
@@ -479,7 +483,7 @@ export default function InventoryPage() {
                                         <div className="grid grid-cols-2 gap-4">
                                             <div>
                                                 <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Số Lượng Nhập</label>
-                                                <input type="number" min={1} value={importForm.quantity} onChange={e => setImportForm({...importForm, quantity: Number(e.target.value)})} className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-sky-400" required/>
+                                                <input type="number" min={1} value={importForm.quantity} onChange={e => setImportForm({ ...importForm, quantity: Number(e.target.value) })} className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-sky-400" required />
                                             </div>
                                             <div>
                                                 <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Đơn vị tính</label>
@@ -494,14 +498,14 @@ export default function InventoryPage() {
                                             <div>
                                                 <label className="text-xs font-bold text-orange-500 uppercase tracking-widest mb-1.5 block">Giá Nhập / Đơn Vị</label>
                                                 <div className="relative">
-                                                    <input type="number" min={0} value={importForm.unit_cost} onChange={e => setImportForm({...importForm, unit_cost: Number(e.target.value)})} className="w-full border border-orange-200 rounded-lg pl-3 pr-8 py-2.5 text-sm focus:outline-none focus:border-orange-400 font-bold text-orange-600"/>
+                                                    <input type="number" min={0} value={importForm.unit_cost} onChange={e => setImportForm({ ...importForm, unit_cost: Number(e.target.value) })} className="w-full border border-orange-200 rounded-lg pl-3 pr-8 py-2.5 text-sm focus:outline-none focus:border-orange-400 font-bold text-orange-600" />
                                                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400">VND</span>
                                                 </div>
                                             </div>
                                             <div>
                                                 <label className="text-xs font-bold text-sky-600 uppercase tracking-widest mb-1.5 block">Giá Bán Niêm Yết</label>
                                                 <div className="relative">
-                                                    <input type="number" min={0} value={importForm.selling_price} onChange={e => setImportForm({...importForm, selling_price: Number(e.target.value)})} className="w-full border border-sky-200 rounded-lg pl-3 pr-8 py-2.5 text-sm focus:outline-none focus:border-sky-400 font-bold text-sky-600"/>
+                                                    <input type="number" min={0} value={importForm.selling_price} onChange={e => setImportForm({ ...importForm, selling_price: Number(e.target.value) })} className="w-full border border-sky-200 rounded-lg pl-3 pr-8 py-2.5 text-sm focus:outline-none focus:border-sky-400 font-bold text-sky-600" />
                                                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400">VND</span>
                                                 </div>
                                             </div>
@@ -510,14 +514,14 @@ export default function InventoryPage() {
                                         {/* Nhà cung cấp + ghi chú */}
                                         <div>
                                             <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Nhà Cung Cấp</label>
-                                            <input list="suppliers-list" type="text" value={importForm.supplier_name} onChange={e => setImportForm({...importForm, supplier_name: e.target.value})} className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-sky-400" placeholder="Chọn có sẵn hoặc nhập mới..."/>
+                                            <input list="suppliers-list" type="text" value={importForm.supplier_name} onChange={e => setImportForm({ ...importForm, supplier_name: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-sky-400" placeholder="Chọn có sẵn hoặc nhập mới..." />
                                             <datalist id="suppliers-list">
                                                 {Array.from(new Set(products.map(p => (p as any).supplier_name).filter(Boolean))).map((s: any) => <option key={s} value={s} />)}
                                             </datalist>
                                         </div>
                                         <div>
                                             <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Ghi Chú</label>
-                                            <input type="text" value={importForm.note} onChange={e => setImportForm({...importForm, note: e.target.value})} className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-sky-400" placeholder="Ghi chú..."/>
+                                            <input type="text" value={importForm.note} onChange={e => setImportForm({ ...importForm, note: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-sky-400" placeholder="Ghi chú..." />
                                         </div>
 
                                         {/* Ảnh chứng từ */}
@@ -525,7 +529,7 @@ export default function InventoryPage() {
                                             <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Ảnh hóa đơn / Chứng từ</label>
                                             <div className="flex items-center gap-3">
                                                 <div className="w-14 h-14 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden shrink-0">
-                                                    {importForm.image_url ? <img src={importForm.image_url} className="w-full h-full object-cover" alt="proof" /> : <ImageIcon size={20} className="text-slate-300"/>}
+                                                    {importForm.image_url ? <img src={importForm.image_url} className="w-full h-full object-cover" alt="proof" /> : <ImageIcon size={20} className="text-slate-300" />}
                                                 </div>
                                                 <label className="cursor-pointer inline-flex items-center gap-2 py-2 px-4 rounded-lg border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">
                                                     <ImageIcon size={15} /> Chọn ảnh...
@@ -536,7 +540,7 @@ export default function InventoryPage() {
                                         </div>
 
                                         <Button type="submit" disabled={importing} className="gap-2 bg-sky-600 hover:bg-sky-700 h-12 shadow-lg shadow-sky-100">
-                                            <PackagePlus size={18}/>
+                                            <PackagePlus size={18} />
                                             {importing ? 'Đang thực hiện...' : (
                                                 Number(importForm.product_id) === -1
                                                     ? 'Tạo Mới & Nhập Kho'
@@ -553,17 +557,17 @@ export default function InventoryPage() {
                             <div className="flex flex-wrap gap-3 items-center p-4 border-b border-slate-100 bg-slate-50">
                                 <div className="flex items-center gap-2 text-sm">
                                     <label className="font-semibold text-slate-500 text-xs uppercase tracking-wider">Từ ngày</label>
-                                    <input type="date" value={logFilter.from} onChange={e => setLogFilter(p => ({...p, from: e.target.value}))} className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-400"/>
+                                    <input type="date" value={logFilter.from} onChange={e => setLogFilter(p => ({ ...p, from: e.target.value }))} className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-400" />
                                 </div>
                                 <div className="flex items-center gap-2 text-sm">
                                     <label className="font-semibold text-slate-500 text-xs uppercase tracking-wider">Đến ngày</label>
-                                    <input type="date" value={logFilter.to} onChange={e => setLogFilter(p => ({...p, to: e.target.value}))} className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-400"/>
+                                    <input type="date" value={logFilter.to} onChange={e => setLogFilter(p => ({ ...p, to: e.target.value }))} className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-400" />
                                 </div>
                                 <div className="flex bg-slate-200/50 p-1 rounded-lg">
-                                    <button onClick={() => setLogFilter(p => ({...p, reason: 'all'}))} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${logFilter.reason === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Tất cả</button>
-                                    <button onClick={() => setLogFilter(p => ({...p, reason: 'STOCK_IN'}))} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${logFilter.reason === 'STOCK_IN' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Nhập kho</button>
-                                    <button onClick={() => setLogFilter(p => ({...p, reason: 'SALE'}))} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${logFilter.reason === 'SALE' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Xuất bán</button>
-                                    <button onClick={() => setLogFilter(p => ({...p, reason: 'DAMAGE'}))} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${logFilter.reason === 'DAMAGE' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Lỗi/Hỏng</button>
+                                    <button onClick={() => setLogFilter(p => ({ ...p, reason: 'all' }))} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${logFilter.reason === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Tất cả</button>
+                                    <button onClick={() => setLogFilter(p => ({ ...p, reason: 'STOCK_IN' }))} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${logFilter.reason === 'STOCK_IN' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Nhập kho</button>
+                                    <button onClick={() => setLogFilter(p => ({ ...p, reason: 'SALE' }))} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${logFilter.reason === 'SALE' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Xuất bán</button>
+                                    <button onClick={() => setLogFilter(p => ({ ...p, reason: 'DAMAGE' }))} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${logFilter.reason === 'DAMAGE' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Lỗi/Hỏng</button>
                                 </div>
                                 {(logFilter.from || logFilter.to || logFilter.reason !== 'all') && (
                                     <button onClick={() => setLogFilter({ from: '', to: '', reason: 'all' })} className="text-xs text-rose-500 hover:underline font-semibold">✕ Bỏ lọc</button>
@@ -582,82 +586,82 @@ export default function InventoryPage() {
                                 } bản ghi</span>
                             </div>
                             <div className="overflow-x-auto">
-                            <table className="w-full text-left border-collapse">
-                            <thead>
-                                <tr className="bg-slate-50 text-slate-500 font-semibold text-sm tracking-wider uppercase border-b border-slate-200">
-                                    <th className="p-4">Thời gian</th>
-                                    <th className="p-4">Nhân Viên</th>
-                                    <th className="p-4">Sản Phẩm</th>
-                                    <th className="p-4 text-center">Số lượng</th>
-                                    <th className="p-4">Loại</th>
-                                    <th className="p-4 text-center">Trạng Thái</th>
-                                    <th className="p-4">Chứng từ</th>
-                                    {isAdmin && <th className="p-4 text-center">Hành động</th>}
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-100">
-                                {(() => {
-                                    const filtered = logs.filter((l: any) => {
-                                        if (logFilter.reason !== 'all') {
-                                            if (logFilter.reason === 'STOCK_IN' && l.type !== 'IMPORT') return false;
-                                            if (logFilter.reason === 'SALE' && l.type !== 'SALE') return false;
-                                            if (logFilter.reason === 'DAMAGE' && l.type !== 'DAMAGE') return false;
-                                        }
-                                        if (logFilter.from && l.timestamp && new Date(l.timestamp) < new Date(logFilter.from)) return false;
-                                        if (logFilter.to && l.timestamp && new Date(l.timestamp) > new Date(logFilter.to + 'T23:59:59')) return false;
-                                        return true;
-                                    });
-                                    if (filtered.length === 0) return (
-                                        <tr><td colSpan={8} className="p-12 text-center text-slate-400">Không có dữ liệu phù hợp.</td></tr>
-                                    );
-                                    return filtered.map((log: any) => {
-                                        const isPending = log.status === 'PENDING' || log.status === 'Pending';
-                                        const isApproved = log.status === 'APPROVED' || log.status === 'Approved';
-                                        const isRejected = log.status === 'REJECTED' || log.status === 'Rejected';
-                                        return (
-                                        <tr key={log.id} className={`hover:bg-slate-50 transition-colors ${isPending ? 'bg-amber-50/40' : ''}`}>
-                                            <td className="p-4 text-sm text-slate-500 whitespace-nowrap">
-                                                {log.timestamp ? new Date(log.timestamp).toLocaleString('vi-VN') : '—'}
-                                            </td>
-                                            <td className="p-4 text-sm font-semibold text-emerald-700">
-                                                👤 {log.user_name || 'Hệ thống'}
-                                            </td>
-                                            <td className="p-4 font-medium text-slate-800">{log.product_name}</td>
-                                            <td className="p-4 text-center">
-                                                <span className={`font-bold text-sm ${log.change_amount < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
-                                                    {log.change_amount > 0 ? '+' : ''}{log.change_amount}
-                                                </span>
-                                            </td>
-                                            <td className="p-4">
-                                                <span className="bg-slate-100 px-2.5 py-1 rounded-full text-xs font-semibold text-slate-600">{log.reason_label || log.reason}</span>
-                                                {log.note && <div className="text-xs text-slate-400 mt-0.5 max-w-[140px] truncate" title={log.note}>{log.note}</div>}
-                                            </td>
-                                            <td className="p-4 text-center">
-                                                {isPending && <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-semibold rounded-full"><Clock size={10}/> Chờ duyệt</span>}
-                                                {isApproved && <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 text-xs font-semibold rounded-full"><CheckCircle size={10}/> Đã duyệt</span>}
-                                                {isRejected && <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-rose-100 text-rose-700 text-xs font-semibold rounded-full"><XCircle size={10}/> Từ chối</span>}
-                                            </td>
-                                            <td className="p-4">
-                                                {log.image_url ? <a href={log.image_url} target="_blank" className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline font-semibold"><ImageIcon size={13}/> Xem HĐ</a> : <span className="text-xs text-slate-300">—</span>}
-                                            </td>
-                                            {isAdmin && (
-                                                <td className="p-4 text-center">
-                                                    <div className="flex gap-1 justify-center">
-                                                        {isPending && <>
-                                                            <button onClick={() => api.inventory.approveLog(log.id).then(() => { toast.success('Đã duyệt nhập kho'); fetchData(); }).catch(() => toast.error('Lỗi duyệt'))} className="p-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors" title="Phê duyệt"><CheckCircle size={15}/></button>
-                                                            <button onClick={() => { if(confirm('Từ chối phiếu này?')) api.inventory.rejectLog(log.id).then(() => { toast.success('Đã từ chối'); fetchData(); }).catch(() => toast.error('Lỗi')) }} className="p-1.5 bg-rose-50 text-rose-500 hover:bg-rose-100 rounded-lg transition-colors" title="Từ chối"><XCircle size={15}/></button>
-                                                        </>}
-                                                        <button onClick={() => { if(confirm('Xoá phiếu này? Nếu đã duyệt tồn kho sẽ bị trừ lại.')) api.inventory.deleteLog(log.id, true).then(() => { toast.success('Đã xoá'); fetchData(); }).catch(() => toast.error('Lỗi xoá')) }} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Xoá"><Trash2 size={15}/></button>
-                                                    </div>
-                                                </td>
-                                            )}
+                                <table className="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr className="bg-slate-50 text-slate-500 font-semibold text-sm tracking-wider uppercase border-b border-slate-200">
+                                            <th className="p-4">Thời gian</th>
+                                            <th className="p-4">Nhân Viên</th>
+                                            <th className="p-4">Sản Phẩm</th>
+                                            <th className="p-4 text-center">Số lượng</th>
+                                            <th className="p-4">Loại</th>
+                                            <th className="p-4 text-center">Trạng Thái</th>
+                                            <th className="p-4">Chứng từ</th>
+                                            {isAdmin && <th className="p-4 text-center">Hành động</th>}
                                         </tr>
-                                        );
-                                    });
-                                })()}
-                            </tbody>
-                        </table>
-                        </div>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {(() => {
+                                            const filtered = logs.filter((l: any) => {
+                                                if (logFilter.reason !== 'all') {
+                                                    if (logFilter.reason === 'STOCK_IN' && l.type !== 'IMPORT') return false;
+                                                    if (logFilter.reason === 'SALE' && l.type !== 'SALE') return false;
+                                                    if (logFilter.reason === 'DAMAGE' && l.type !== 'DAMAGE') return false;
+                                                }
+                                                if (logFilter.from && l.timestamp && new Date(l.timestamp) < new Date(logFilter.from)) return false;
+                                                if (logFilter.to && l.timestamp && new Date(l.timestamp) > new Date(logFilter.to + 'T23:59:59')) return false;
+                                                return true;
+                                            });
+                                            if (filtered.length === 0) return (
+                                                <tr><td colSpan={8} className="p-12 text-center text-slate-400">Không có dữ liệu phù hợp.</td></tr>
+                                            );
+                                            return filtered.map((log: any) => {
+                                                const isPending = log.status === 'PENDING' || log.status === 'Pending';
+                                                const isApproved = log.status === 'APPROVED' || log.status === 'Approved';
+                                                const isRejected = log.status === 'REJECTED' || log.status === 'Rejected';
+                                                return (
+                                                    <tr key={log.id} className={`hover:bg-slate-50 transition-colors ${isPending ? 'bg-amber-50/40' : ''}`}>
+                                                        <td className="p-4 text-sm text-slate-500 whitespace-nowrap">
+                                                            {log.timestamp ? new Date(log.timestamp).toLocaleString('vi-VN') : '—'}
+                                                        </td>
+                                                        <td className="p-4 text-sm font-semibold text-emerald-700">
+                                                            👤 {log.user_name || 'Hệ thống'}
+                                                        </td>
+                                                        <td className="p-4 font-medium text-slate-800">{log.product_name}</td>
+                                                        <td className="p-4 text-center">
+                                                            <span className={`font-bold text-sm ${log.change_amount < 0 ? 'text-red-500' : 'text-emerald-600'}`}>
+                                                                {log.change_amount > 0 ? '+' : ''}{log.change_amount}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-4">
+                                                            <span className="bg-slate-100 px-2.5 py-1 rounded-full text-xs font-semibold text-slate-600">{log.reason_label || log.reason}</span>
+                                                            {log.note && <div className="text-xs text-slate-400 mt-0.5 max-w-[140px] truncate" title={log.note}>{log.note}</div>}
+                                                        </td>
+                                                        <td className="p-4 text-center">
+                                                            {isPending && <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-semibold rounded-full"><Clock size={10} /> Chờ duyệt</span>}
+                                                            {isApproved && <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 text-xs font-semibold rounded-full"><CheckCircle size={10} /> Đã duyệt</span>}
+                                                            {isRejected && <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-rose-100 text-rose-700 text-xs font-semibold rounded-full"><XCircle size={10} /> Từ chối</span>}
+                                                        </td>
+                                                        <td className="p-4">
+                                                            {log.image_url ? <a href={log.image_url} target="_blank" className="inline-flex items-center gap-1 text-xs text-sky-600 hover:underline font-semibold"><ImageIcon size={13} /> Xem HĐ</a> : <span className="text-xs text-slate-300">—</span>}
+                                                        </td>
+                                                        {isAdmin && (
+                                                            <td className="p-4 text-center">
+                                                                <div className="flex gap-1 justify-center">
+                                                                    {isPending && <>
+                                                                        <button onClick={() => api.inventory.approveLog(log.id).then(() => { toast.success('Đã duyệt nhập kho'); fetchData(); }).catch(() => toast.error('Lỗi duyệt'))} className="p-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 rounded-lg transition-colors" title="Phê duyệt"><CheckCircle size={15} /></button>
+                                                                        <button onClick={() => { if (confirm('Từ chối phiếu này?')) api.inventory.rejectLog(log.id).then(() => { toast.success('Đã từ chối'); fetchData(); }).catch(() => toast.error('Lỗi')) }} className="p-1.5 bg-rose-50 text-rose-500 hover:bg-rose-100 rounded-lg transition-colors" title="Từ chối"><XCircle size={15} /></button>
+                                                                    </>}
+                                                                    <button onClick={() => { if (confirm('Xoá phiếu này? Nếu đã duyệt tồn kho sẽ bị trừ lại.')) api.inventory.deleteLog(log.id, true).then(() => { toast.success('Đã xoá'); fetchData(); }).catch(() => toast.error('Lỗi xoá')) }} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors" title="Xoá"><Trash2 size={15} /></button>
+                                                                </div>
+                                                            </td>
+                                                        )}
+                                                    </tr>
+                                                );
+                                            });
+                                        })()}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
 
                     ) : activeTab === 'Thống Kê' ? (
@@ -698,14 +702,14 @@ export default function InventoryPage() {
                                             <div className="flex flex-col gap-1.5">
                                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Từ ngày</label>
                                                 <input type="date" value={(statsExtraFilter as any).date_from || ''}
-                                                    onChange={e => setStatsExtraFilter((p: any) => ({...p, date_from: e.target.value}))}
+                                                    onChange={e => setStatsExtraFilter((p: any) => ({ ...p, date_from: e.target.value }))}
                                                     className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
                                                 />
                                             </div>
                                             <div className="flex flex-col gap-1.5">
                                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Đến ngày</label>
                                                 <input type="date" value={(statsExtraFilter as any).date_to || ''}
-                                                    onChange={e => setStatsExtraFilter((p: any) => ({...p, date_to: e.target.value}))}
+                                                    onChange={e => setStatsExtraFilter((p: any) => ({ ...p, date_to: e.target.value }))}
                                                     className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
                                                 />
                                             </div>
@@ -736,7 +740,7 @@ export default function InventoryPage() {
                                         <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Danh mục</label>
                                         <select
                                             value={(statsExtraFilter as any).category || ''}
-                                            onChange={e => setStatsExtraFilter((p: any) => ({...p, category: e.target.value || undefined}))}
+                                            onChange={e => setStatsExtraFilter((p: any) => ({ ...p, category: e.target.value || undefined }))}
                                             className="border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:border-indigo-400"
                                         >
                                             <option value="">Tất cả danh mục</option>
@@ -749,7 +753,7 @@ export default function InventoryPage() {
                                         disabled={statsLoading}
                                         className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold transition-colors disabled:opacity-60 flex items-center gap-2 self-end"
                                     >
-                                        <BarChart2 size={15}/>
+                                        <BarChart2 size={15} />
                                         {statsLoading ? 'Đang tải...' : 'Xem Thống Kê'}
                                     </button>
 
@@ -800,7 +804,7 @@ export default function InventoryPage() {
                                                             <div className="text-lg font-extrabold text-slate-800">{cat.qty_sold.toLocaleString()}<span className="text-xs font-normal text-slate-500 ml-1">sp</span></div>
                                                             <div className="text-xs text-slate-500">{(cat.revenue || 0).toLocaleString()}đ</div>
                                                             <div className="w-full bg-white/60 rounded-full h-1.5 mt-1">
-                                                                <div className={`h-full ${meta.color.replace('text-', 'bg-')} rounded-full`} style={{width: `${pct}%`}}/>
+                                                                <div className={`h-full ${meta.color.replace('text-', 'bg-')} rounded-full`} style={{ width: `${pct}%` }} />
                                                             </div>
                                                             <div className="text-[10px] text-slate-400">{pct.toFixed(1)}%</div>
                                                         </div>
@@ -818,7 +822,7 @@ export default function InventoryPage() {
                                         </h4>
                                         {statsData.by_product.length === 0 ? (
                                             <div className="text-center py-10 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                                                <BarChart2 size={32} className="mx-auto mb-2 opacity-30"/>
+                                                <BarChart2 size={32} className="mx-auto mb-2 opacity-30" />
                                                 Không có dữ liệu bán hàng trong kỳ này.
                                             </div>
                                         ) : (
@@ -841,7 +845,7 @@ export default function InventoryPage() {
                                                             const pct = statsData.total_qty > 0 ? (p.qty_sold / statsData.total_qty) * 100 : 0;
                                                             return (
                                                                 <tr key={p.product_id} className="hover:bg-indigo-50/30 transition-colors">
-                                                                    <td className="p-3 text-xs font-bold text-slate-400">{i+1}</td>
+                                                                    <td className="p-3 text-xs font-bold text-slate-400">{i + 1}</td>
                                                                     <td className="p-3 font-semibold text-slate-800">{p.product_name}</td>
                                                                     <td className="p-3"><span className="bg-slate-100 px-2 py-0.5 rounded-full text-xs font-semibold text-slate-500">{p.category}</span></td>
                                                                     <td className="p-3 text-right text-sm text-slate-500">{(p.price || 0).toLocaleString()}đ</td>
@@ -851,7 +855,7 @@ export default function InventoryPage() {
                                                                     <td className="p-3">
                                                                         <div className="flex items-center gap-2">
                                                                             <div className="flex-1 bg-slate-100 rounded-full h-2 min-w-[50px]">
-                                                                                <div className="h-full bg-indigo-400 rounded-full" style={{width:`${pct}%`}}/>
+                                                                                <div className="h-full bg-indigo-400 rounded-full" style={{ width: `${pct}%` }} />
                                                                             </div>
                                                                             <span className="text-xs text-slate-400 w-10 text-right">{pct.toFixed(1)}%</span>
                                                                         </div>
@@ -867,7 +871,7 @@ export default function InventoryPage() {
                                 </div>
                             ) : (
                                 <div className="text-center py-16 text-slate-400">
-                                    <BarChart2 size={56} className="mx-auto opacity-10 mb-4"/>
+                                    <BarChart2 size={56} className="mx-auto opacity-10 mb-4" />
                                     <p className="text-base">Chọn kỳ báo cáo và nhấn <strong className="text-indigo-500">Xem Thống Kê</strong></p>
                                     <p className="text-sm mt-1 text-slate-300">Hỗ trợ: theo ngày, khoảng ngày, tháng, năm và lọc theo danh mục</p>
                                 </div>
@@ -949,7 +953,7 @@ export default function InventoryPage() {
                 </div>
             </Card>
 
-            
+
             {/* PRODUCT MODAL (ADD / EDIT) */}
             {isProductModalOpen && (
                 <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex justify-center items-center p-4">
@@ -964,7 +968,7 @@ export default function InventoryPage() {
                                     <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Ảnh minh họa</label>
                                     <div className="flex items-center gap-4">
                                         <div className="w-16 h-16 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden shrink-0">
-                                            {formData.image_url ? <img src={formData.image_url} className="w-full h-full object-cover" /> : <ImageIcon size={24} className="text-slate-300"/>}
+                                            {formData.image_url ? <img src={formData.image_url} className="w-full h-full object-cover" /> : <ImageIcon size={24} className="text-slate-300" />}
                                         </div>
                                         <div className="flex-1">
                                             <label className="text-sm cursor-pointer inline-flex items-center justify-center gap-2 py-2 px-4 rounded-full border-0 font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors">
@@ -980,31 +984,31 @@ export default function InventoryPage() {
                                 </div>
                                 <div className="col-span-2 sm:col-span-1">
                                     <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Tên mặt hàng</label>
-                                    <input required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} type="text" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500" placeholder="Vd: Nước khoáng Aquafina" />
+                                    <input required value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} type="text" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500" placeholder="Vd: Nước khoáng Aquafina" />
                                 </div>
                                 <div className="col-span-2 sm:col-span-1">
                                     <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Phân loại</label>
-                                    <select value={formData.category} onChange={e => setFormData({...formData, category: e.target.value})} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500 bg-white">
+                                    <select value={formData.category} onChange={e => setFormData({ ...formData, category: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500 bg-white">
                                         {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                                     </select>
                                 </div>
                                 <div className="col-span-2 sm:col-span-1">
                                     <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Đơn vị tính</label>
-                                    <select value={formData.unit} onChange={e => setFormData({...formData, unit: e.target.value})} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500 bg-white">
+                                    <select value={formData.unit} onChange={e => setFormData({ ...formData, unit: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500 bg-white">
                                         {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
                                     </select>
                                 </div>
                                 <div className="col-span-2 sm:col-span-1">
                                     <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">SL Tồn Kho</label>
-                                    <input required value={formData.stock_quantity} onChange={e => setFormData({...formData, stock_quantity: e.target.value})} type="number" min="0" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500" />
+                                    <input required value={formData.stock_quantity} onChange={e => setFormData({ ...formData, stock_quantity: e.target.value })} type="number" min="0" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500" />
                                 </div>
                                 <div>
                                     <label className="text-xs font-bold text-orange-500 uppercase tracking-widest mb-1.5 block">Giá vốn (Nhập)</label>
-                                    <input required value={formData.cost_price} onChange={e => setFormData({...formData, cost_price: e.target.value})} type="number" min="0" className="w-full border border-orange-200 rounded-lg px-3 py-2 text-sm focus:outline-orange-500" />
+                                    <input required value={formData.cost_price} onChange={e => setFormData({ ...formData, cost_price: e.target.value })} type="number" min="0" className="w-full border border-orange-200 rounded-lg px-3 py-2 text-sm focus:outline-orange-500" />
                                 </div>
                                 <div>
                                     <label className="text-xs font-bold text-emerald-500 uppercase tracking-widest mb-1.5 block">Giá Bán Niêm yết</label>
-                                    <input required value={formData.price} onChange={e => setFormData({...formData, price: e.target.value})} type="number" min="0" className="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500" />
+                                    <input required value={formData.price} onChange={e => setFormData({ ...formData, price: e.target.value })} type="number" min="0" className="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:outline-emerald-500" />
                                 </div>
                             </div>
                             <div className="flex justify-end gap-3 mt-4 pt-4 border-t border-slate-100">
@@ -1035,7 +1039,7 @@ export default function InventoryPage() {
                                 <div className="grid grid-cols-1 gap-2">
                                     {REASONS.map(r => (
                                         <label key={r} className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${damageData.reason === r ? 'border-rose-500 bg-rose-50/50' : 'border-slate-100 hover:border-slate-300'}`}>
-                                            <input type="radio" name="reason" value={r} checked={damageData.reason === r} onChange={() => setDamageData({...damageData, reason: r})} className="accent-rose-500 w-4 h-4"/>
+                                            <input type="radio" name="reason" value={r} checked={damageData.reason === r} onChange={() => setDamageData({ ...damageData, reason: r })} className="accent-rose-500 w-4 h-4" />
                                             <span className="text-sm font-semibold text-slate-700">{r}</span>
                                         </label>
                                     ))}
@@ -1044,12 +1048,12 @@ export default function InventoryPage() {
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Số lượng báo hỏng</label>
-                                    <input type="number" min="1" max={damageProduct.stock_quantity} value={damageData.amount} onChange={e => setDamageData({...damageData, amount: parseInt(e.target.value) || 1})} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-rose-500"/>
+                                    <input type="number" min="1" max={damageProduct.stock_quantity} value={damageData.amount} onChange={e => setDamageData({ ...damageData, amount: parseInt(e.target.value) || 1 })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-rose-500" />
                                 </div>
                                 {damageData.reason === 'Khách làm hỏng' ? (
                                     <div className="animate-in slide-in-from-right-4">
                                         <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Tiền Bồi Thường (VND)</label>
-                                        <input type="number" min="0" value={damageData.compensation_amount} onChange={e => setDamageData({...damageData, compensation_amount: parseFloat(e.target.value) || 0})} className="w-full border-2 border-emerald-200 bg-emerald-50 rounded-lg px-3 py-2 text-sm text-emerald-700 font-bold focus:outline-emerald-500 shadow-inner"/>
+                                        <input type="number" min="0" value={damageData.compensation_amount} onChange={e => setDamageData({ ...damageData, compensation_amount: parseFloat(e.target.value) || 0 })} className="w-full border-2 border-emerald-200 bg-emerald-50 rounded-lg px-3 py-2 text-sm text-emerald-700 font-bold focus:outline-emerald-500 shadow-inner" />
                                     </div>
                                 ) : (
                                     <div className="flex flex-col justify-end pb-2 opacity-50">

@@ -1,25 +1,26 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, extract, and_, or_, update
+from sqlalchemy import select, func, extract, and_, or_
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 import shutil
 import os
-import json
-import random
-import string
 
-from app.db import engine, get_db
+from app.db import engine, get_db, AsyncSessionLocal
 from app.models import (
     Base, Product, Court, CourtType, InventoryLog, LogReason, LogStatus, LogType, LOG_REASON_LABELS,
     Booking, BookingStatus, CourtBlock, BookingLog, PaymentStatus, CourtPricingRule, BankSettings,
-    WebhookLog
+    OnlineBooking, WebhookLog, UserRole, User as UserModel,
+    Match, MatchParticipant, MatchRequest, Notification, MatchStatus, MatchRequestStatus
 )
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 # Define Pydantic schemas for requests/responses
 class ProductBase(BaseModel):
@@ -108,9 +109,6 @@ class BankSettingsRequest(BaseModel):
     account_number: str
     account_name: str
 
-class BankToggleRequest(BaseModel):
-    is_active: bool
-
 class BankSettingsResponse(BaseModel):
     id: int
     bank_code: str
@@ -156,17 +154,55 @@ class CourtPricingRuleResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# Lifecycle: create tables + PostgreSQL/SQLite migration
+# Matchmaking Schemas
+class MatchCreate(BaseModel):
+    sport: str
+    level: str
+    time: datetime
+    courts: str
+    max_slots: int
+    author_id: int
+
+class MatchResponse(BaseModel):
+    id: int
+    author_id: int
+    author_name: str
+    sport: str
+    level: str
+    time: datetime
+    courts: str
+    max_slots: int
+    current_slots: int
+    status: str
+    participants: List[str] = []
+    class Config:
+        from_attributes = True
+
+class MatchJoinRequest(BaseModel):
+    requester_id: int
+
+class NotificationResponse(BaseModel):
+    id: int
+    title: str
+    message: str
+    is_read: bool
+    created_at: datetime
+    match_request_id: Optional[int]
+    class Config:
+        from_attributes = True
+
+# Lifecycle: create tables + PostgreSQL migration
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs("uploads", exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         
+        # --- Auto-Migration: add 'type' column if missing (PostgreSQL only) ---
         from sqlalchemy import text
-        # --- Migration: inventory_logs.type ---
         try:
             await conn.execute(text("ALTER TABLE inventory_logs ADD COLUMN IF NOT EXISTS type VARCHAR(50) DEFAULT 'ADJUSTMENT'"))
+            # Backfill type for existing records
             await conn.execute(text("""
                 UPDATE inventory_logs SET type = CASE
                     WHEN reason = 'STOCK_IN' THEN 'IMPORT'
@@ -176,62 +212,41 @@ async def lifespan(app: FastAPI):
                 END
                 WHERE type IS NULL OR type = 'ADJUSTMENT'
             """))
-            print("[Migration] inventory_logs.type ready.")
+            print("[Migration] 'type' column ready.")
+            
+            # --- Auto-Migration: transactions table ---
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS proof_url VARCHAR(500)"))
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS note VARCHAR(200)"))
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'Completed'"))
+            print("[Migration] 'transactions' columns ready.")
+
+            # --- Auto-Migration: webhook_logs table ---
+            await conn.execute(text("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS payment_ref VARCHAR(200)"))
+            await conn.execute(text("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS amount FLOAT"))
+            await conn.execute(text("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS matched BOOLEAN DEFAULT FALSE"))
+            await conn.execute(text("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS raw TEXT"))
+            print("[Migration] 'webhook_logs' columns ready.")
         except Exception as e:
-            print(f"[Migration] inventory_logs.type: {e}")
+            print(f"[Migration] info: {e}")
 
-        # --- Migration: bookings online columns ---
-        is_postgres = "postgresql" in str(engine.url)
-        for col_def in [
-            ("expires_at",       "TIMESTAMP" if is_postgres else "DATETIME"),
-            ("payment_ref",      "VARCHAR(50)"),
-            ("proof_image_url",  "VARCHAR(255)"),
-            ("is_online",        "BOOLEAN DEFAULT FALSE" if is_postgres else "BOOLEAN DEFAULT 0"),
-            ("price",            "FLOAT"),
-        ]:
-            col_name, col_type = col_def
-            try:
-                if is_postgres:
-                    await conn.execute(text(f"ALTER TABLE bookings ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
-                else:
-                    await conn.execute(text(f"ALTER TABLE bookings ADD COLUMN {col_name} {col_type}"))
-                print(f"[Migration] bookings.{col_name} added.")
-            except Exception as e:
-                # If IF NOT EXISTS is not supported or other issue, just log and pass
-                print(f"[Migration] bookings.{col_name} error: {e}")
-                pass
-
-        # --- Migration: webhook_logs table ---
+    # --- Seed Admin ---
+    async with AsyncSessionLocal() as session:
         try:
-            if is_postgres:
-                await conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS webhook_logs (
-                        id SERIAL PRIMARY KEY,
-                        source VARCHAR(50) DEFAULT 'casso',
-                        payment_ref VARCHAR(100),
-                        amount FLOAT,
-                        booking_id INTEGER REFERENCES bookings(id) ON DELETE SET NULL,
-                        matched BOOLEAN DEFAULT FALSE,
-                        raw_data TEXT,
-                        timestamp TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-            else:
-                await conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS webhook_logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        source VARCHAR(50) DEFAULT 'casso',
-                        payment_ref VARCHAR(100),
-                        amount FLOAT,
-                        booking_id INTEGER,
-                        matched BOOLEAN DEFAULT 0,
-                        raw_data TEXT,
-                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                """))
-            print("[Migration] webhook_logs ready.")
+            from app.models import User as UserModel
+            res = await session.execute(select(UserModel).where(UserModel.email == "admin@example.com"))
+            if not res.scalar_one_or_none():
+                admin = UserModel(
+                    name="Quản trị viên",
+                    email="admin@example.com",
+                    role=UserRole.ADMIN,
+                    password_hash=pwd_context.hash("123"),
+                    wallet_balance=1000000.0
+                )
+                session.add(admin)
+                await session.commit()
+                print("[Seed] Created Admin")
         except Exception as e:
-            print(f"[Migration] webhook_logs error: {e}")
+            print(f"[Seed] Error: {e}")
 
     yield
 
@@ -243,7 +258,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Setup CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -258,7 +273,27 @@ async def upload_file(file: UploadFile = File(...)):
     file_location = f"uploads/{file.filename}"
     with open(file_location, "wb+") as file_object:
         shutil.copyfileobj(file.file, file_object)
-    return {"url": f"http://localhost:8000/uploads/{file.filename}"}
+    return {"url": f"http://127.0.0.1:8000/uploads/{file.filename}"}
+
+# --- SHIFT UTILS ---
+SHIFTS_DEF = [
+    {"id": 1, "start": "06:00", "end": "07:30"},
+    {"id": 2, "start": "07:30", "end": "09:00"},
+    {"id": 3, "start": "09:00", "end": "10:30"},
+    {"id": 4, "start": "10:30", "end": "12:00"},
+    {"id": 5, "start": "12:00", "end": "13:30"},
+    {"id": 6, "start": "13:30", "end": "15:00"},
+    {"id": 7, "start": "15:00", "end": "16:30"},
+    {"id": 8, "start": "16:30", "end": "18:00"},
+    {"id": 9, "start": "18:00", "end": "19:30"},
+    {"id": 10, "start": "19:30", "end": "21:00"},
+    {"id": 11, "start": "21:00", "end": "22:30"},
+    {"id": 12, "start": "22:30", "end": "23:59"}
+]
+
+def _shift_to_datetime(date_str: str, time_str: str):
+    """date_str: YYYY-MM-DD, time_str: HH:MM"""
+    return datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
 
 # ===========================
 # PRODUCTS CRUD
@@ -533,7 +568,9 @@ async def get_inventory_logs(
 @app.post("/api/v1/inventory/import")
 async def import_stock(req: ImportRequest, db: AsyncSession = Depends(get_db)):
     """Nhập kho: tăng tồn và ghi log, cập nhật giá hoặc tạo mới"""
-    status_val = LogStatus.APPROVED.value if req.is_admin else LogStatus.PENDING.value
+    # Nhập kho luôn tự động duyệt (Approved) để cập nhật tồn kho ngay lập tức
+    # Chế độ PENDING chỉ dành cho Báo hỏng (Damage)
+    status_val = LogStatus.APPROVED.value
 
     if req.product_id > 0:
         res = await db.execute(select(Product).where(Product.id == req.product_id))
@@ -664,11 +701,20 @@ async def get_scheduler(date: str, db: AsyncSession = Depends(get_db)):
         )
     )
     blocks = blocks_res.scalars().all()
+
+    online_res = await db.execute(
+        select(OnlineBooking).where(
+            OnlineBooking.date == date,
+            OnlineBooking.status == "holding"
+        )
+    )
+    online_bookings = online_res.scalars().all()
     
     return {
         "courts": courts,
         "bookings": bookings,
-        "blocks": blocks
+        "blocks": blocks,
+        "online_bookings": online_bookings
     }
 
 @app.post("/api/v1/courts/{court_id}/block")
@@ -965,62 +1011,646 @@ async def get_bank_settings(db: AsyncSession = Depends(get_db)):
     bank = result.scalar_one_or_none()
     if not bank:
         return None
-    return bank
-
-@app.get("/api/v1/bank-settings/all")
-async def get_all_bank_settings(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(BankSettings).order_by(BankSettings.id.desc()))
-    return result.scalars().all()
+    return {"id": bank.id, "bank_code": bank.bank_code, "bank_name": bank.bank_name,
+            "account_number": bank.account_number, "account_name": bank.account_name, "is_active": bank.is_active}
 
 @app.put("/api/v1/bank-settings")
 async def upsert_bank_settings(req: BankSettingsRequest, db: AsyncSession = Depends(get_db)):
-    # Đặt tất cả cũ là inactive
-    await db.execute(update(BankSettings).values(is_active=False))
-    
-    # Tìm hoặc tạo mới
+    # Tìm hoặc tạo mới (không tắt các nhà bank khác)
     result2 = await db.execute(select(BankSettings).where(
         BankSettings.account_number == req.account_number,
         BankSettings.bank_code == req.bank_code
     ))
     existing = result2.scalar_one_or_none()
-
     if existing:
-        existing.is_active = True
-        existing.account_name = req.account_name
         existing.bank_name = req.bank_name
+        existing.account_name = req.account_name
+        existing.is_active = True
         await db.commit()
         return {"ok": True, "id": existing.id}
     else:
         bank = BankSettings(**req.dict(), is_active=True)
         db.add(bank)
         await db.commit()
+        await db.refresh(bank)
         return {"ok": True, "id": bank.id}
 
+
+@app.get("/api/v1/bank-settings/all", response_model=List[BankSettingsResponse])
+async def get_all_bank_settings(db: AsyncSession = Depends(get_db)):
+    """Trả về tất cả tài khoản ngân hàng."""
+    result = await db.execute(select(BankSettings).order_by(BankSettings.id))
+    return result.scalars().all()
+
+
+class BankToggleRequest(BaseModel):
+    is_active: Optional[bool] = None
+
 @app.put("/api/v1/bank-settings/{bank_id}/toggle")
-async def toggle_bank_setting(bank_id: int, req: BankToggleRequest, db: AsyncSession = Depends(get_db)):
+async def toggle_bank_settings(bank_id: int, req: BankToggleRequest = BankToggleRequest(), db: AsyncSession = Depends(get_db)):
+    """Bật/Tắt tài khoản ngân hàng."""
     result = await db.execute(select(BankSettings).where(BankSettings.id == bank_id))
     bank = result.scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail="Bank setting not found")
-        
-    if req.is_active:
-        # Deactivate all others first
-        await db.execute(update(BankSettings).values(is_active=False))
-    
-    bank.is_active = req.is_active
+        raise HTTPException(status_code=404, detail="Bank settings not found")
+    # Nếu frontend gửi is_active thì dùng giá trị đó, không thì toggle
+    bank.is_active = req.is_active if req.is_active is not None else (not bank.is_active)
     await db.commit()
-    return {"ok": True}
+    return {"ok": True, "is_active": bank.is_active}
+
 
 @app.delete("/api/v1/bank-settings/{bank_id}")
-async def delete_bank_setting(bank_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_bank_settings(bank_id: int, db: AsyncSession = Depends(get_db)):
+    """Xóa tài khoản ngân hàng."""
     result = await db.execute(select(BankSettings).where(BankSettings.id == bank_id))
     bank = result.scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail="Bank setting not found")
-    
+        raise HTTPException(status_code=404, detail="Bank settings not found")
     await db.delete(bank)
     await db.commit()
     return {"ok": True}
+
+
+# ===========================
+# ONLINE BOOKING SYSTEM
+# ===========================
+SHIFTS_DEF = [
+    {"id": 1,  "start": "06:00", "end": "07:30"},
+    {"id": 2,  "start": "07:30", "end": "09:00"},
+    {"id": 3,  "start": "09:00", "end": "10:30"},
+    {"id": 4,  "start": "10:30", "end": "12:00"},
+    {"id": 5,  "start": "12:00", "end": "13:30"},
+    {"id": 6,  "start": "13:30", "end": "15:00"},
+    {"id": 7,  "start": "15:00", "end": "16:30"},
+    {"id": 8,  "start": "16:30", "end": "18:00"},
+    {"id": 9,  "start": "18:00", "end": "19:30"},
+    {"id": 10, "start": "19:30", "end": "21:00"},
+    {"id": 11, "start": "21:00", "end": "22:30"},
+    {"id": 12, "start": "22:30", "end": "23:59"},
+]
+
+
+def _shift_to_datetime(date_str: str, time_str: str) -> datetime:
+    """Convert YYYY-MM-DD + HH:MM to datetime."""
+    h, m = map(int, time_str.split(":"))
+    base = datetime.strptime(date_str, "%Y-%m-%d")
+    return base.replace(hour=h, minute=m, second=0, microsecond=0)
+
+
+@app.get("/api/v1/courts/availability")
+async def get_court_availability(date: str = Query(...), db: AsyncSession = Depends(get_db)):
+    """
+    Trả về danh sách sân + trạng thái từng ca cho ngày chỉ định.
+    status: 'available' | 'holding' | 'booked'
+    """
+    import json
+    now_utc = datetime.utcnow()
+    now_vn = now_utc + timedelta(hours=7)
+
+    # 1. Lấy các sân hoạt động + pricing rules
+    courts_res = await db.execute(
+        select(Court).options(selectinload(Court.pricing_rules)).where(Court.is_active == True)
+    )
+    courts = courts_res.scalars().all()
+
+    # 2. Lấy bookings admin (đã xác nhận) trong ngày
+    start_of_day = datetime.strptime(date, "%Y-%m-%d")
+    end_of_day = start_of_day + timedelta(days=1)
+    bookings_res = await db.execute(
+        select(Booking).where(
+            Booking.is_deleted == False,
+            Booking.start_time >= start_of_day,
+            Booking.start_time < end_of_day,
+        )
+    )
+    admin_bookings = bookings_res.scalars().all()
+
+    # 3. Lấy online bookings (holding) trong ngày
+    online_res = await db.execute(
+        select(OnlineBooking).where(
+            OnlineBooking.date == date,
+            OnlineBooking.status == "holding",
+        )
+    )
+    online_bookings = online_res.scalars().all()
+
+    # 4. Lấy court blocks (bảo trì) trong ngày
+    blocks_res = await db.execute(
+        select(CourtBlock).where(
+            CourtBlock.start_time >= start_of_day,
+            CourtBlock.start_time < end_of_day,
+        )
+    )
+    blocks = blocks_res.scalars().all()
+
+    # Xây dựng set (court_id, shift_id) đã bị có 
+    booked_slots: set = set()
+    holding_slots: set = set()
+    blocked_slots: set = set()
+
+    for bl in blocks:
+        b_start = bl.start_time.strftime("%H:%M")
+        b_end = bl.end_time.strftime("%H:%M")
+        if bl.end_time.date() > bl.start_time.date():
+            b_end = "23:59" # Cap at end of day
+            
+        for s in SHIFTS_DEF:
+            s_start = s["start"]
+            s_end = s["end"]
+            # Overlap if max(start) < min(end)
+            if max(s_start, b_start) < min(s_end, b_end):
+                blocked_slots.add((bl.court_id, s["id"]))
+
+    for b in admin_bookings:
+        b_start = b.start_time.strftime("%H:%M")
+        for s in SHIFTS_DEF:
+            if s["start"] <= b_start < s["end"]:
+                booked_slots.add((b.court_id, s["id"]))
+
+    for ob in online_bookings:
+        try:
+            shift_ids = json.loads(ob.shift_ids)
+        except Exception:
+            shift_ids = []
+        is_expired = ob.expires_at and ob.expires_at < now_utc
+        for sid in shift_ids:
+            if ob.status == "confirmed":
+                booked_slots.add((ob.court_id, sid))
+            elif ob.status == "holding" and not is_expired:
+                holding_slots.add((ob.court_id, sid))
+
+    result_courts = []
+    for court in courts:
+        pricing_map = {r.shift_id: r for r in (court.pricing_rules or [])}
+        shifts_info = []
+        for s in SHIFTS_DEF:
+            # Kiểm tra ca đã qua chưa (so sánh với giờ hiện tại VN)
+            shift_end_dt = _shift_to_datetime(date, s["end"] if s["end"] != "23:59" else "23:59")
+            is_past = date < now_vn.strftime("%Y-%m-%d") or (
+                date == now_vn.strftime("%Y-%m-%d") and shift_end_dt.time() <= now_vn.time()
+            )
+
+            key = (court.id, s["id"])
+            if key in blocked_slots:
+                status = "blocked"
+            elif key in booked_slots:
+                status = "booked"
+            elif is_past:
+                status = "past"
+            elif key in holding_slots:
+                status = "holding"
+            else:
+                status = "available"
+
+            rule = pricing_map.get(s["id"])
+            price = rule.price_override if (rule and rule.price_override is not None) else court.price_per_hour
+
+            shifts_info.append({
+                "shift_id": s["id"],
+                "start": s["start"],
+                "end": s["end"],
+                "status": status,
+                "price": price,
+                "tier": rule.tier if rule else "normal",
+            })
+
+        result_courts.append({
+            "id": court.id,
+            "name": court.name,
+            "type": court.type,
+            "price_per_hour": court.price_per_hour,
+            "shifts": shifts_info,
+        })
+
+    return {"courts": result_courts, "date": date}
+
+
+class OnlineBookingCreateRequest(BaseModel):
+    court_id: int
+    date: str
+    shift_ids: List[int]
+    guest_name: str
+    guest_phone: str
+    note: Optional[str] = ""
+
+
+@app.post("/api/v1/online-bookings")
+async def create_online_booking(req: OnlineBookingCreateRequest, db: AsyncSession = Depends(get_db)):
+    import json, random, string
+    from datetime import timezone
+
+    if not req.shift_ids:
+        raise HTTPException(status_code=400, detail="Vui lòng chọn ít nhất 1 ca")
+
+    # 1. Lấy dữ liệu ngày mục tiêu
+    target_date = datetime.strptime(req.date, "%Y-%m-%d").date()
+    start_of_day = datetime.combine(target_date, datetime.min.time())
+    end_of_day = start_of_day + timedelta(days=1)
+
+    # 2. Tìm các ca đã bị chiếm (Taken shifts)
+    now_utc = datetime.now(timezone.utc)
+    taken_shifts: set = set()
+
+    # A. Check OnlineBookings (chỉ lấy holding chưa hết hạn)
+    online_res = await db.execute(
+        select(OnlineBooking).where(
+            OnlineBooking.date == req.date,
+            OnlineBooking.court_id == req.court_id,
+            OnlineBooking.status == "holding",
+        )
+    )
+    for ob in online_res.scalars().all():
+        is_ob_expired = ob.expires_at and ob.expires_at.replace(tzinfo=timezone.utc) < now_utc
+        if not is_ob_expired:
+            try:
+                taken_shifts.update(json.loads(ob.shift_ids))
+            except: pass
+
+    # B. Check Bookings (thực tế) & CourtBlocks
+    books_res = await db.execute(
+        select(Booking).where(
+            Booking.court_id == req.court_id,
+            Booking.is_deleted == False,
+            Booking.start_time >= start_of_day,
+            Booking.start_time < end_of_day
+        )
+    )
+    existing_books = books_res.scalars().all()
+
+    blocks_res = await db.execute(
+        select(CourtBlock).where(
+            CourtBlock.court_id == req.court_id,
+            CourtBlock.start_time >= start_of_day,
+            CourtBlock.start_time < end_of_day
+        )
+    )
+    existing_blocks = blocks_res.scalars().all()
+
+    for s in SHIFTS_DEF:
+        s_start = _shift_to_datetime(req.date, s["start"])
+        s_end_str = s["end"] if s["end"] != "23:59" else "23:59"
+        s_end = _shift_to_datetime(req.date, s_end_str)
+        if s["end"] == "23:59":
+            s_end = s_end.replace(hour=23, minute=59, second=59)
+
+        # Check overlap với Booking
+        for b in existing_books:
+            if b.start_time < s_end and b.end_time > s_start:
+                taken_shifts.add(s["id"])
+                break
+        
+        # Check overlap với Block
+        if s["id"] not in taken_shifts:
+            for bl in existing_blocks:
+                if bl.start_time < s_end and bl.end_time > s_start:
+                    taken_shifts.add(s["id"])
+                    break
+
+    # 3. Kiểm tra conflict
+    conflict = set(req.shift_ids) & taken_shifts
+    if conflict:
+        raise HTTPException(status_code=409, detail=f"Ca {sorted(conflict)} đã có người đặt")
+
+    # Tính tiền
+    court_res = await db.execute(select(Court).options(selectinload(Court.pricing_rules)).where(Court.id == req.court_id))
+    court = court_res.scalar_one_or_none()
+    if not court:
+        raise HTTPException(status_code=404, detail="Sân không tồn tại")
+
+    pricing_map = {r.shift_id: r for r in (court.pricing_rules or [])}
+    total = 0.0
+    for sid in req.shift_ids:
+        s = next((x for x in SHIFTS_DEF if x["id"] == sid), None)
+        if not s:
+            continue
+        rule = pricing_map.get(sid)
+        price = rule.price_override if (rule and rule.price_override is not None) else court.price_per_hour
+        start_t = datetime.strptime(s["start"], "%H:%M")
+        end_t = datetime.strptime(s["end"] if s["end"] != "23:59" else "23:59", "%H:%M")
+        hours = (end_t - start_t).seconds / 3600
+        total += hours * price
+
+    # Tạo mã chuyển khoản unique
+    ref = "DAT" + "".join(random.choices(string.digits, k=6))
+
+    now_utc_naive = datetime.utcnow()
+    ob = OnlineBooking(
+        court_id=req.court_id,
+        date=req.date,
+        shift_ids=json.dumps(req.shift_ids),
+        guest_name=req.guest_name,
+        guest_phone=req.guest_phone,
+        note=req.note,
+        total_amount=round(total),
+        payment_ref=ref,
+        status="holding",
+        created_at=now_utc_naive,
+        expires_at=now_utc_naive + timedelta(minutes=15),
+    )
+    db.add(ob)
+    await db.commit()
+    await db.refresh(ob)
+
+    # Lấy bank active
+    bank_res = await db.execute(select(BankSettings).where(BankSettings.is_active == True).limit(1))
+    bank = bank_res.scalar_one_or_none()
+
+    expires_at_utc = ob.expires_at.replace(tzinfo=timezone.utc)
+    seconds_left = max(0, int((expires_at_utc - datetime.now(timezone.utc)).total_seconds()))
+
+    return {
+        "booking_id": ob.id,
+        "payment_ref": ob.payment_ref,
+        "total_amount": ob.total_amount,
+        "expires_at": ob.expires_at.isoformat() + "Z" if ob.expires_at else None,
+        "seconds_left": seconds_left,
+        "is_expired": seconds_left <= 0,
+        "status": ob.status,
+        "bank": {
+            "bank_code": bank.bank_code,
+            "bank_name": bank.bank_name,
+            "account_number": bank.account_number,
+            "account_name": bank.account_name,
+        } if bank else None,
+    }
+
+
+@app.get("/api/v1/online-bookings/{booking_id}")
+async def get_online_booking(booking_id: int, db: AsyncSession = Depends(get_db)):
+    import json
+    res = await db.execute(
+        select(OnlineBooking).options(selectinload(OnlineBooking.court)).where(OnlineBooking.id == booking_id)
+    )
+    ob = res.scalar_one_or_none()
+    if not ob:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    bank_res = await db.execute(select(BankSettings).where(BankSettings.is_active == True).limit(1))
+    bank = bank_res.scalar_one_or_none()
+
+    try:
+        shift_ids = json.loads(ob.shift_ids)
+    except Exception:
+        shift_ids = []
+
+    expires_at_utc = ob.expires_at.replace(tzinfo=timezone.utc) if ob.expires_at else None
+    seconds_left = max(0, int((expires_at_utc - datetime.now(timezone.utc)).total_seconds())) if expires_at_utc else 0
+
+    return {
+        "id": ob.id,
+        "court_id": ob.court_id,
+        "court_name": ob.court.name if ob.court else "",
+        "date": ob.date,
+        "shift_ids": shift_ids,
+        "guest_name": ob.guest_name,
+        "guest_phone": ob.guest_phone,
+        "note": ob.note or "",
+        "total_amount": ob.total_amount,
+        "payment_ref": ob.payment_ref,
+        "status": ob.status,
+        "proof_url": ob.proof_url,
+        "created_at": ob.created_at.isoformat() + "Z" if ob.created_at else None,
+        "expires_at": ob.expires_at.isoformat() + "Z" if ob.expires_at else None,
+        "seconds_left": seconds_left,
+        "is_expired": (seconds_left <= 0 and ob.status == "holding"),
+        "bank": {
+            "bank_code": bank.bank_code,
+            "bank_name": bank.bank_name,
+            "account_number": bank.account_number,
+            "account_name": bank.account_name,
+        } if bank else None,
+    }
+
+
+@app.get("/api/v1/online-bookings/by-phone/{phone}")
+async def get_online_bookings_by_phone(phone: str, db: AsyncSession = Depends(get_db)):
+    import json
+    res = await db.execute(
+        select(OnlineBooking).options(selectinload(OnlineBooking.court))
+        .where(OnlineBooking.guest_phone == phone)
+        .order_by(OnlineBooking.created_at.desc())
+        .limit(20)
+    )
+    bookings = res.scalars().all()
+    result = []
+    for ob in bookings:
+        try:
+            shift_ids = json.loads(ob.shift_ids)
+        except Exception:
+            shift_ids = []
+            
+        start_time_str = "00:00"
+        end_time_str = "23:59"
+        if shift_ids:
+            shifts = [s for s in SHIFTS_DEF if s["id"] in shift_ids]
+            if shifts:
+                start_time_str = min(s["start"] for s in shifts)
+                end_time_str = max(s["end"] for s in shifts)
+                
+        start_dt = _shift_to_datetime(ob.date, start_time_str)
+        end_dt = _shift_to_datetime(ob.date, end_time_str if end_time_str != "23:59" else "23:59")
+        if end_time_str == "23:59":
+            end_dt = end_dt.replace(hour=23, minute=59, second=59)
+
+        payment_status = "Unpaid"
+        if ob.status == "confirmed":
+            payment_status = "Fully_Paid"
+            
+        result.append({
+            "id": ob.id,
+            "court_name": ob.court.name if ob.court else "",
+            "date": ob.date,
+            "shift_ids": shift_ids,
+            "start_time": start_dt.isoformat() + "Z",
+            "end_time": end_dt.isoformat() + "Z",
+            "total_amount": ob.total_amount,
+            "payment_ref": ob.payment_ref,
+            "payment_status": payment_status,
+            "status": ob.status,
+            "is_deleted": ob.status == "cancelled",
+            "expires_at": ob.expires_at.isoformat() + "Z" if ob.expires_at else None,
+            "proof_image_url": ob.proof_url,
+            "created_at": ob.created_at.isoformat() + "Z" if ob.created_at else None,
+        })
+    return result
+
+
+@app.post("/api/v1/online-bookings/{booking_id}/upload-proof")
+async def upload_proof(booking_id: int, file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(OnlineBooking).where(OnlineBooking.id == booking_id))
+    ob = res.scalar_one_or_none()
+    if not ob:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    file_location = f"uploads/proof_{booking_id}_{file.filename}"
+    with open(file_location, "wb+") as f:
+        shutil.copyfileobj(file.file, f)
+    proof_url = f"http://127.0.0.1:8000/uploads/proof_{booking_id}_{file.filename}"
+    ob.proof_url = proof_url
+    await db.commit()
+    return {"ok": True, "proof_url": proof_url}
+
+
+async def sync_online_booking_to_booking(db: AsyncSession, ob: OnlineBooking):
+    import json, sys
+    try:
+        try:
+            shift_ids = json.loads(ob.shift_ids)
+        except Exception:
+            shift_ids = []
+        
+        for sid in shift_ids:
+            s = next((x for x in SHIFTS_DEF if x["id"] == sid), None)
+            if not s: continue
+            
+            start_time = _shift_to_datetime(ob.date, s["start"])
+            end_time_str = s["end"] if s["end"] != "23:59" else "23:59"
+            end_time = _shift_to_datetime(ob.date, end_time_str)
+            if s["end"] == "23:59":
+                end_time = end_time.replace(hour=23, minute=59, second=59)
+
+            # Check if already exists to prevent duplicate syncs
+            res = await db.execute(select(Booking).where(
+                Booking.court_id == ob.court_id,
+                Booking.start_time == start_time,
+                Booking.is_deleted == False
+            ))
+            if res.scalar_one_or_none():
+                continue
+                
+            note_str = ob.note or ""
+            if ob.payment_ref:
+                note_str = f"[Online Booking: {ob.payment_ref}] {note_str}"
+
+            booking = Booking(
+                court_id=ob.court_id,
+                start_time=start_time,
+                end_time=end_time,
+                guest_name=ob.guest_name,
+                guest_phone=ob.guest_phone,
+                note=note_str.strip(),
+                payment_status=PaymentStatus.FULLY_PAID,
+                status=BookingStatus.PAID
+            )
+            db.add(booking)
+    except Exception as e:
+        print(f"[SYNC ERROR] {e}", file=sys.stderr)
+        raise e
+
+
+@app.post("/api/v1/online-bookings/{booking_id}/manual-approve")
+async def manual_approve_booking(booking_id: int, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(OnlineBooking).where(OnlineBooking.id == booking_id))
+    ob = res.scalar_one_or_none()
+    if not ob:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    ob.status = "confirmed"
+    await sync_online_booking_to_booking(db, ob)
+    await db.commit()
+    return {"ok": True, "status": "confirmed"}
+
+
+# ===========================
+# WEBHOOK ENDPOINTS
+# ===========================
+class WebhookCassoPayload(BaseModel):
+    data: Optional[List[dict]] = None
+
+
+@app.post("/api/v1/webhooks/casso")
+async def webhook_casso(request: dict, db: AsyncSession = Depends(get_db)):
+    """Nhận webhook từ Casso khi có chuyển khoản."""
+    import json
+    transactions = request.get("data", [])
+    if not isinstance(transactions, list):
+        transactions = [transactions]
+
+    matched_count = 0
+    for txn in transactions:
+        desc = str(txn.get("description", "") or txn.get("memo", ""))
+        amount = float(txn.get("amount", 0))
+
+        # Tìm booking khớp mã
+        online_res = await db.execute(
+            select(OnlineBooking).where(
+                OnlineBooking.status == "holding",
+            )
+        )
+        obs = online_res.scalars().all()
+        matched = False
+        for ob in obs:
+            if ob.payment_ref and ob.payment_ref.upper() in desc.upper():
+                ob.status = "confirmed"
+                matched = True
+                matched_count += 1
+                await sync_online_booking_to_booking(db, ob)
+                break
+
+        log = WebhookLog(
+            source="casso",
+            payment_ref=desc[:200],
+            amount=amount,
+            matched=matched,
+            raw=json.dumps(txn, ensure_ascii=False)[:2000],
+        )
+        db.add(log)
+
+    await db.commit()
+    return {"ok": True, "matched": matched_count}
+
+
+@app.post("/api/v1/webhooks/confirm-test")
+async def webhook_confirm_test(
+    payment_ref: str,
+    amount: float,
+    source: str = "test",
+    db: AsyncSession = Depends(get_db)
+):
+    """Test endpoint: xác nhận booking theo mã chuyển khoản."""
+    import json
+    res = await db.execute(
+        select(OnlineBooking).where(
+            OnlineBooking.payment_ref == payment_ref,
+            OnlineBooking.status == "holding",
+        )
+    )
+    ob = res.scalar_one_or_none()
+    matched = False
+    if ob:
+        ob.status = "confirmed"
+        matched = True
+        await sync_online_booking_to_booking(db, ob)
+
+    log = WebhookLog(
+        source=source,
+        payment_ref=payment_ref,
+        amount=amount,
+        matched=matched,
+        raw=json.dumps({"payment_ref": payment_ref, "amount": amount}),
+    )
+    db.add(log)
+    await db.commit()
+    return {"ok": True, "matched": matched}
+
+
+@app.get("/api/v1/webhook-logs")
+async def get_webhook_logs(db: AsyncSession = Depends(get_db)):
+    """Lấy lịch sử webhook."""
+    result = await db.execute(
+        select(WebhookLog).order_by(WebhookLog.timestamp.desc()).limit(100)
+    )
+    logs = result.scalars().all()
+    return [
+        {
+            "id": log.id,
+            "source": log.source,
+            "payment_ref": log.payment_ref,
+            "amount": log.amount,
+            "matched": log.matched,
+            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+        }
+        for log in logs
+    ]
 
 
 # ===========================
@@ -1227,613 +1857,600 @@ async def update_inventory_log(log_id: int, req: InventoryLogEditRequest, db: As
     return {"ok": True}
 
 
-# ==================================
-# HELPERS
-# ==================================
-def _gen_payment_ref(booking_id: int) -> str:
-    """Tạo mã nội dung chuyển khoản duy nhất, ngắn gọn."""
-    suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"SAN{booking_id}{suffix}"
+# ===========================
+# USERS / CUSTOMERS MANAGEMENT
+# ===========================
+class UserUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role: Optional[str] = None
+    wallet_balance: Optional[float] = None
 
-
-async def _auto_cancel_expired():
-    """Background: tự động hủy booking hết hạn chưa thanh toán."""
-    from app.db import AsyncSessionLocal
-    async with AsyncSessionLocal() as db:
-        now = datetime.utcnow()
-        res = await db.execute(
-            select(Booking).where(
-                Booking.is_online == True,
-                Booking.payment_status == PaymentStatus.UNPAID,
-                Booking.is_deleted == False,
-                Booking.expires_at != None,
-                Booking.expires_at < now
-            )
-        )
-        expired = res.scalars().all()
-        for b in expired:
-            b.is_deleted = True
-            b.status = BookingStatus.CANCELLED
-        if expired:
-            await db.commit()
-            print(f"[AutoCancel] {len(expired)} booking(s) expired & cancelled.")
-
-
-# ==================================
-# ONLINE BOOKING — PUBLIC ENDPOINTS
-# ==================================
-
-class OnlineBookingRequest(BaseModel):
-    court_id: int
-    date: str             # YYYY-MM-DD
-    shift_ids: List[int]  # Danh sách ca ID muốn đặt
-    guest_name: str
-    guest_phone: str
-    note: Optional[str] = ""
-
-class OnlineBookingResponse(BaseModel):
-    booking_id: int
-    payment_ref: str
-    expires_at: str       # ISO string
-    total_amount: float
-    court_name: str
-    shifts: List[dict]
-
-class ProofUploadResponse(BaseModel):
-    ok: bool
-    message: str
-
-class WebhookConfirmRequest(BaseModel):
-    payment_ref: str
+class TopUpRequest(BaseModel):
     amount: float
-    source: Optional[str] = "manual"
+    proof_url: Optional[str] = None
+    note: Optional[str] = None
 
-# Bản định nghĩa ca (phải đồng bộ với frontend)
-SHIFTS = [
-    {"id": 1,  "start": "06:00", "end": "07:30"},
-    {"id": 2,  "start": "07:30", "end": "09:00"},
-    {"id": 3,  "start": "09:00", "end": "10:30"},
-    {"id": 4,  "start": "10:30", "end": "12:00"},
-    {"id": 5,  "start": "12:00", "end": "13:30"},
-    {"id": 6,  "start": "13:30", "end": "15:00"},
-    {"id": 7,  "start": "15:00", "end": "16:30"},
-    {"id": 8,  "start": "16:30", "end": "18:00"},
-    {"id": 9,  "start": "18:00", "end": "19:30"},
-    {"id": 10, "start": "19:30", "end": "21:00"},
-    {"id": 11, "start": "21:00", "end": "22:30"},
-    {"id": 12, "start": "22:30", "end": "23:59"},
-]
+class UserCreateRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    phone: Optional[str] = None
+    role: str = "User"
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
-@app.get("/api/v1/courts/availability")
-async def get_court_availability(date: str, db: AsyncSession = Depends(get_db)):
-    """
-    Endpoint công khai: trả về danh sách sân và trạng thái từng ca theo ngày.
-    Dùng để hiển thị lịch đặt sân cho khách hàng.
-    """
-    try:
-        target_date = datetime.strptime(date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Ngày không hợp lệ (YYYY-MM-DD)")
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    phone: Optional[str] = None
+    role: str
+    wallet_balance: float
+    booking_count: int = 0
+    class Config:
+        from_attributes = True
 
-    start_of_day = datetime.combine(target_date, datetime.min.time())
-    end_of_day = start_of_day + timedelta(days=1)
-
-    courts_res = await db.execute(select(Court).where(Court.is_active == True))
-    courts_list = courts_res.scalars().all()
-
-    court_ids = [c.id for c in courts_list]
-
-    books_res = await db.execute(
-        select(Booking).where(
-            Booking.is_deleted == False,
-            Booking.court_id.in_(court_ids),
-            Booking.start_time >= start_of_day,
-            Booking.start_time < end_of_day,
-        )
-    )
-    bookings = books_res.scalars().all()
-
-    blocks_res = await db.execute(
-        select(CourtBlock).where(
-            CourtBlock.court_id.in_(court_ids),
-            CourtBlock.start_time >= start_of_day,
-            CourtBlock.start_time < end_of_day,
-        )
-    )
-    blocks = blocks_res.scalars().all()
-
-    # Pre-load ALL pricing rules for all courts in ONE query
-    rules_res = await db.execute(
-        select(CourtPricingRule).where(CourtPricingRule.court_id.in_(court_ids))
-    )
-    all_rules = rules_res.scalars().all()
-    # Index: {(court_id, shift_id): price_override}
-    rules_map: dict = {}
-    for r in all_rules:
-        if r.price_override:
-            rules_map[(r.court_id, r.shift_id)] = r.price_override
-
-    now_utc = datetime.utcnow()
-
-    result_courts = []
-    for court in courts_list:
-        shift_statuses = []
-        for shift in SHIFTS:
-            sh_start = datetime.combine(target_date, datetime.strptime(shift["start"], "%H:%M").time())
-            sh_end_str = shift["end"]
-            if sh_end_str == "23:59":
-                sh_end = datetime.combine(target_date, datetime.strptime("23:59", "%H:%M").time())
-            else:
-                sh_end = datetime.combine(target_date, datetime.strptime(sh_end_str, "%H:%M").time())
-
-            s_ts = sh_start.timestamp()
-            e_ts = sh_end.timestamp()
-
-            booking_hit = next(
-                (b for b in bookings
-                 if b.court_id == court.id
-                 and b.start_time.timestamp() < e_ts
-                 and b.end_time.timestamp() > s_ts),
-                None
-            )
-
-            block_hit = next(
-                (bl for bl in blocks
-                 if bl.court_id == court.id
-                 and bl.start_time.timestamp() < e_ts
-                 and bl.end_time.timestamp() > s_ts),
-                None
-            )
-
-            if block_hit:
-                shift_status = "blocked"
-            elif booking_hit:
-                is_online_hold = (
-                    getattr(booking_hit, 'is_online', False) and
-                    str(booking_hit.payment_status).replace("PaymentStatus.", "") == "Unpaid" and
-                    booking_hit.expires_at is not None and
-                    booking_hit.expires_at > now_utc
-                )
-                shift_status = "holding" if is_online_hold else "booked"
-            else:
-                shift_status = "available"
-
-            price = rules_map.get((court.id, shift["id"]), court.price_per_hour)
-
-            shift_statuses.append({
-                "shift_id": shift["id"],
-                "start": shift["start"],
-                "end": shift["end"],
-                "status": shift_status,
-                "price": price,
-            })
-
-        result_courts.append({
-            "id": court.id,
-            "name": court.name,
-            "type": court.type,
-            "price_per_hour": court.price_per_hour,
-            "deposit_price": court.deposit_price,
-            "shifts": shift_statuses,
-        })
-
-    return {"courts": result_courts, "date": date}
-
-
-
-@app.post("/api/v1/online-bookings")
-async def create_online_booking(
-    req: OnlineBookingRequest,
-    background_tasks: BackgroundTasks,
+@app.get("/api/v1/users")
+async def get_users(
+    role: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db)
 ):
-    """Tạo đặt sân online kèm giữ chỗ 15 phút."""
-    # Validate court
-    court_res = await db.execute(select(Court).where(Court.id == req.court_id, Court.is_active == True))
-    court = court_res.scalar_one_or_none()
-    if not court:
-        raise HTTPException(status_code=404, detail="Sân không tồn tại")
-
-    try:
-        target_date = datetime.strptime(req.date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Ngày không hợp lệ")
-
-    now_utc = datetime.utcnow()
-    now_vn = now_utc + timedelta(hours=7)
-    today_vn = now_vn.replace(hour=0, minute=0, second=0, microsecond=0).date()
-    if target_date < today_vn:
-        raise HTTPException(status_code=400, detail="Không thể đặt sân cho ngày đã qua")
-
-    # Validate shifts
-    valid_shift_ids = {s["id"] for s in SHIFTS}
-    for sid in req.shift_ids:
-        if sid not in valid_shift_ids:
-            raise HTTPException(status_code=400, detail=f"Ca {sid} không hợp lệ")
-
-    # Kiểm tra từng ca xem có bị trùng không
-    start_of_day = datetime.combine(target_date, datetime.min.time())
-    end_of_day = start_of_day + timedelta(days=1)
-    existing_res = await db.execute(
-        select(Booking).where(
-            Booking.court_id == req.court_id,
-            Booking.is_deleted == False,
-            Booking.start_time >= start_of_day,
-            Booking.start_time < end_of_day,
-        )
-    )
-    existing_bookings = existing_res.scalars().all()
-
-    expires_at = now_utc + timedelta(minutes=15)
-    created_ids = []
-    shift_info_list = []
-    total_amount = 0.0
-    common_payment_ref = None
-
-    for sid in req.shift_ids:
-        shift = next(s for s in SHIFTS if s["id"] == sid)
-        sh_start = datetime.combine(target_date, datetime.strptime(shift["start"], "%H:%M").time())
-        sh_end_str = shift["end"]
-        sh_end = datetime.combine(target_date, datetime.strptime("23:59" if sh_end_str == "23:59" else sh_end_str, "%H:%M").time())
-
-        # Kiểm tra trùng lịch (bỏ qua booking đã hết hạn giữ chỗ)
-        conflict = next(
-            (b for b in existing_bookings
-             if b.start_time.timestamp() < sh_end.timestamp()
-             and b.end_time.timestamp() > sh_start.timestamp()
-             and not (b.is_online and str(b.payment_status).replace("PaymentStatus.", "") == "Unpaid"
-                     and b.expires_at and b.expires_at <= now_utc)),
-            None
-        )
-        if conflict:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Ca {shift['start']}-{shift['end']} đã được đặt. Vui lòng chọn ca khác."
-            )
-
-        # Tính giá
-        rule_res = await db.execute(
-            select(CourtPricingRule).where(
-                CourtPricingRule.court_id == req.court_id,
-                CourtPricingRule.shift_id == sid
+    """Lấy danh sách tất cả user (có thể lọc theo role và search)"""
+    from app.models import User as UserModel
+    filters = []
+    if role and role != "all":
+        filters.append(UserModel.role == role)
+    if search:
+        filters.append(
+            or_(
+                UserModel.name.ilike(f"%{search}%"),
+                UserModel.email.ilike(f"%{search}%"),
+                UserModel.phone.ilike(f"%{search}%")
             )
         )
-        rule = rule_res.scalar_one_or_none()
-        price_per_hour = rule.price_override if rule and rule.price_override else court.price_per_hour
-        duration_h = (sh_end.timestamp() - sh_start.timestamp()) / 3600
-        shift_price = duration_h * price_per_hour
-        total_amount += shift_price
-
-        booking = Booking(
-            court_id=req.court_id,
-            guest_name=req.guest_name,
-            guest_phone=req.guest_phone,
-            start_time=sh_start,
-            end_time=sh_end,
-            status=BookingStatus.PENDING,
-            payment_status=PaymentStatus.UNPAID,
-            note=req.note,
-            expires_at=expires_at,
-            is_online=True,
-            price=shift_price,
-        )
-        db.add(booking)
-        await db.flush()  # Lấy ID
-
-        if common_payment_ref is None:
-            # Tạo payment_ref từ ID của booking đầu tiên
-            common_payment_ref = _gen_payment_ref(booking.id)
-        
-        booking.payment_ref = common_payment_ref
-        created_ids.append(booking.id)
-        shift_info_list.append({
-            "shift_id": sid,
-            "start": shift["start"],
-            "end": shift["end"],
-            "price": shift_price
-        })
-
-    await db.commit()
-
-    # Cleanup background
-    background_tasks.add_task(_auto_cancel_expired)
-
-    # Trả về thông tin booking đầu tiên (chủ yếu để frontend redirect)
-    first_booking_res = await db.execute(select(Booking).where(Booking.id == created_ids[0]))
-    first_booking = first_booking_res.scalar_one()
-
-    return {
-        "ok": True,
-        "booking_id": first_booking.id,
-        "booking_ids": created_ids,
-        "payment_ref": first_booking.payment_ref,
-        "expires_at": first_booking.expires_at.isoformat() + "Z",
-        "total_amount": round(total_amount),
-        "court_name": court.name,
-        "shifts": shift_info_list,
-        "date": req.date,
-        "guest_name": req.guest_name,
-        "guest_phone": req.guest_phone,
-    }
-
-
-@app.get("/api/v1/online-bookings/{booking_id}")
-async def get_online_booking(booking_id: int, db: AsyncSession = Depends(get_db)):
-    """Tra cứu trạng thái booking (dùng để polling ở trang thanh toán)."""
-    res = await db.execute(
-        select(Booking).options(selectinload(Booking.court)).where(Booking.id == booking_id)
-    )
-    b = res.scalar_one_or_none()
-    if not b:
-        raise HTTPException(status_code=404, detail="Booking không tồn tại")
-
-    now_utc = datetime.utcnow()
-    is_expired = (
-        b.is_online and
-        b.payment_status == PaymentStatus.UNPAID and
-        b.expires_at is not None and
-        b.expires_at <= now_utc
-    )
-
-    # Tính tổng tiền (từ nhóm booking cùng payment_ref gốc)
-    # Lấy booking đầu tiên trong nhóm (có ID gốc là phần sau SAN)
-    group_query = select(Booking).where(
-        Booking.guest_phone == b.guest_phone,
-        Booking.is_deleted == False,
-    )
-    if b.payment_ref:
-        # Tìm các booking có cùng tiền tố SAN + ID của đơn đầu tiên
-        # Ví dụ: SAN123ABC -> tìm SAN123...
-        import re
-        m = re.match(r'(SAN\d+)', b.payment_ref)
-        if m:
-            prefix = m.group(1)
-            group_query = group_query.where(Booking.payment_ref.like(f"{prefix}%"))
     
-    group_res = await db.execute(group_query)
-    group_bookings = group_res.scalars().all()
-    total_amount = sum(gb.price or 0.0 for gb in group_bookings)
+    query = select(UserModel)
+    if filters:
+        query = query.where(and_(*filters))
+    query = query.order_by(UserModel.id.desc())
+    
+    result = await db.execute(query)
+    users = result.scalars().all()
+    
+    # Count bookings for each user
+    user_list = []
+    for u in users:
+        booking_res = await db.execute(
+            select(func.count(Booking.id)).where(
+                Booking.user_id == u.id,
+                Booking.is_deleted == False
+            )
+        )
+        booking_count = booking_res.scalar() or 0
+        user_list.append({
+            "id": u.id,
+            "name": u.name,
+            "email": u.email,
+            "phone": u.phone or "",
+            "role": u.role if isinstance(u.role, str) else u.role.value,
+            "wallet_balance": u.wallet_balance or 0.0,
+            "booking_count": booking_count,
+            "google_id": u.google_id
+        })
+    
+    return user_list
 
+import hashlib
+
+@app.post("/api/v1/users")
+async def create_user(req: UserCreateRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        # Check if email exists
+        res = await db.execute(select(UserModel).where(UserModel.email == req.email))
+        if res.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="Email already registered")
+            
+        new_user = UserModel(
+            name=req.name,
+            email=req.email,
+            phone=req.phone,
+            role=req.role,
+            password_hash=pwd_context.hash(req.password),
+            wallet_balance=0.0
+        )
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)
+        return {"ok": True, "user_id": new_user.id}
+    except Exception as e:
+        print(f"Error creating user: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/auth/login")
+async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        res = await db.execute(select(UserModel).where(UserModel.email == req.email))
+        user = res.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+            
+        if not user.password_hash or not pwd_context.verify(req.password, user.password_hash):
+            # Fallback for old/legacy users who might have plain text
+            if user.password_hash == req.password:
+                # Migrate to hashed password
+                user.password_hash = pwd_context.hash(req.password)
+                await db.commit()
+            else:
+                raise HTTPException(status_code=401, detail="Invalid email or password")
+            
+        return {
+            "ok": True,
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role if isinstance(user.role, str) else user.role.value
+            }
+        }
+    except Exception as e:
+        print(f"Error during login: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/users/{user_id}")
+async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    from app.models import User as UserModel
+    result = await db.execute(select(UserModel).where(UserModel.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get bookings
+    booking_res = await db.execute(
+        select(Booking).options(selectinload(Booking.court)).where(
+            Booking.user_id == user_id,
+            Booking.is_deleted == False
+        ).order_by(Booking.start_time.desc()).limit(20)
+    )
+    bookings = booking_res.scalars().all()
+    
+    # Get transactions
+    from app.models import Transaction
+    tx_res = await db.execute(
+        select(Transaction).where(Transaction.user_id == user_id).order_by(Transaction.timestamp.desc()).limit(50)
+    )
+    transactions = tx_res.scalars().all()
+    
     return {
-        "id": b.id,
-        "court_name": b.court.name if b.court else "",
-        "court_id": b.court_id,
-        "guest_name": b.guest_name,
-        "guest_phone": b.guest_phone,
-        "start_time": b.start_time.isoformat(),
-        "end_time": b.end_time.isoformat(),
-        "payment_status": str(b.payment_status).replace("PaymentStatus.", ""),
-        "status": str(b.status).replace("BookingStatus.", ""),
-        "payment_ref": b.payment_ref,
-        "expires_at": b.expires_at.isoformat() + "Z" if b.expires_at else None,
-        "is_expired": is_expired,
-        "is_deleted": b.is_deleted,
-        "proof_image_url": b.proof_image_url,
-        "total_amount": round(total_amount),
-        "note": b.note,
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "phone": user.phone or "",
+        "role": user.role if isinstance(user.role, str) else user.role.value,
+        "wallet_balance": user.wallet_balance or 0.0,
+        "google_id": user.google_id,
+        "bookings": [
+            {
+                "id": b.id,
+                "court_name": b.court.name if b.court else "",
+                "start_time": b.start_time.isoformat(),
+                "end_time": b.end_time.isoformat(),
+                "payment_status": b.payment_status if isinstance(b.payment_status, str) else b.payment_status.value,
+                "note": b.note or ""
+            }
+            for b in bookings
+        ],
+        "transactions": [
+            {
+                "id": t.id,
+                "amount": t.amount,
+                "type": t.type if isinstance(t.type, str) else t.type.value,
+                "status": t.status,
+                "timestamp": t.timestamp.isoformat() + "Z"
+            }
+            for t in transactions
+        ]
     }
 
-
-@app.get("/api/v1/online-bookings/by-phone/{phone}")
-async def get_bookings_by_phone(phone: str, db: AsyncSession = Depends(get_db)):
-    """Tra cứu lịch sử đặt sân theo số điện thoại."""
-    res = await db.execute(
-        select(Booking).options(selectinload(Booking.court)).where(
-            Booking.guest_phone == phone,
-            Booking.is_online == True,
-        ).order_by(Booking.start_time.desc()).limit(50)
-    )
-    bookings = res.scalars().all()
-    return [
-        {
-            "id": b.id,
-            "court_name": b.court.name if b.court else "",
-            "start_time": b.start_time.isoformat(),
-            "end_time": b.end_time.isoformat(),
-            "payment_status": str(b.payment_status).replace("PaymentStatus.", ""),
-            "status": str(b.status).replace("BookingStatus.", ""),
-            "payment_ref": b.payment_ref,
-            "expires_at": b.expires_at.isoformat() + "Z" if b.expires_at else None,
-            "proof_image_url": b.proof_image_url,
-            "is_deleted": b.is_deleted,
-        }
-        for b in bookings
-    ]
-
-
-@app.post("/api/v1/online-bookings/{booking_id}/upload-proof")
-async def upload_proof(
-    booking_id: int,
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db)
-):
-    """Upload ảnh minh chứng chuyển khoản của khách."""
-    res = await db.execute(select(Booking).where(Booking.id == booking_id))
-    booking = res.scalar_one_or_none()
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking không tồn tại")
-
-    # Lưu file
-    ext = os.path.splitext(file.filename)[1] if file.filename else ".jpg"
-    filename = f"proof_{booking_id}_{int(datetime.utcnow().timestamp())}{ext}"
-    file_path = f"uploads/{filename}"
-    with open(file_path, "wb+") as f:
-        shutil.copyfileobj(file.file, f)
-
-    proof_url = f"http://localhost:8000/uploads/{filename}"
-    booking.proof_image_url = proof_url
-    # Đánh dấu chờ xác nhận thủ công nếu chưa được webhook xác nhận
-    if str(booking.payment_status).replace("PaymentStatus.", "") == "Unpaid":
-        booking.payment_status = PaymentStatus.DEPOSIT  # Tạm dùng Deposit = "đang chờ"
-
-    log = BookingLog(
-        booking_id=booking.id,
-        user_id=None,
-        action="UploadProof",
-        details=f"Khách upload minh chứng: {proof_url}"
-    )
-    db.add(log)
-    await db.commit()
-
-    return {"ok": True, "proof_url": proof_url, "message": "Minh chứng đã được gửi, đang chờ xác nhận."}
-
-
-@app.post("/api/v1/webhooks/casso")
-async def webhook_casso(request_data: dict, db: AsyncSession = Depends(get_db)):
-    """
-    Webhook nhận callback từ Casso/SePay khi có biến động số dư.
-    Casso gửi: {"data": [{"description": "...", "amount": 150000, ...}]}
-    """
-    raw = json.dumps(request_data, ensure_ascii=False)
-    transactions = request_data.get("data", [request_data])  # Casso gửi list hoặc single
-
-    matched_count = 0
-    for txn in transactions:
-        description = str(txn.get("description", "") or txn.get("content", "")).upper()
-        amount = float(txn.get("amount", 0) or 0)
-
-        # Tìm payment_ref trong nội dung (pattern SAN + digits + 6chars)
-        import re
-        matches = re.findall(r'SAN\d+[A-Z0-9]{6}', description)
-
-        for ref in matches:
-            # Tìm TẤT CẢ booking có cùng payment_ref
-            booking_res = await db.execute(
-                select(Booking).where(
-                    Booking.payment_ref == ref,
-                    Booking.is_deleted == False,
-                )
-            )
-            matched_bookings = booking_res.scalars().all()
-
-            if matched_bookings:
-                # Lấy booking đầu tiên để log info
-                first_b = matched_bookings[0]
-                
-                wlog = WebhookLog(
-                    source="casso",
-                    payment_ref=ref,
-                    amount=amount,
-                    booking_id=first_b.id,
-                    matched=True,
-                    raw_data=raw[:2000],
-                )
-                db.add(wlog)
-
-                for b in matched_bookings:
-                    b.payment_status = PaymentStatus.FULLY_PAID
-                    b.status = BookingStatus.PAID
-                    b.expires_at = None
-
-                log = BookingLog(
-                    booking_id=first_b.id,
-                    user_id=None,
-                    action="WebhookPaid",
-                    details=f"Tự động xác nhận qua Casso ({len(matched_bookings)} ca). Ref: {ref}, Số tiền: {amount:,.0f}đ"
-                )
-                db.add(log)
-                matched_count += 1
-            else:
-                # Log phụ cho trường hợp không khớp
-                wlog = WebhookLog(
-                    source="casso",
-                    payment_ref=ref,
-                    amount=amount,
-                    matched=False,
-                    raw_data=raw[:2000],
-                )
-                db.add(wlog)
-
-    await db.commit()
-    return {"ok": True, "matched": matched_count}
-
-
-@app.post("/api/v1/webhooks/confirm-test")
-async def webhook_confirm_test(req: WebhookConfirmRequest, db: AsyncSession = Depends(get_db)):
-    """
-    Endpoint giả lập xác nhận thanh toán (dùng để test nội bộ, không cần tài khoản Casso).
-    Production: bỏ hoặc bảo vệ bằng API key.
-    """
-    booking_res = await db.execute(
-        select(Booking).where(
-            Booking.payment_ref == req.payment_ref,
-            Booking.is_deleted == False,
-        )
-    )
-    matched_bookings = booking_res.scalars().all()
-    if not matched_bookings:
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy booking với ref: {req.payment_ref}")
-
-    for b in matched_bookings:
-        b.payment_status = PaymentStatus.FULLY_PAID
-        b.status = BookingStatus.PAID
-        b.expires_at = None
-
-    first_b = matched_bookings[0]
-
-
-    wlog = WebhookLog(
-        source=req.source or "manual",
-        payment_ref=req.payment_ref,
-        amount=req.amount,
-        booking_id=first_b.id,
-        matched=True,
-        raw_data=json.dumps(req.model_dump(), ensure_ascii=False),
-    )
-    db.add(wlog)
-
-    log = BookingLog(
-        booking_id=first_b.id,
-        user_id=None,
-        action="ManualConfirm",
-        details=f"Xác nhận thủ công/test ({len(matched_bookings)} ca). Số tiền: {req.amount:,.0f}đ"
-    )
-    db.add(log)
-    await db.commit()
-
-    return {"ok": True, "booking_id": booking.id, "payment_status": "Fully_Paid"}
-
-
-@app.post("/api/v1/online-bookings/{booking_id}/manual-approve")
-async def manual_approve_booking(booking_id: int, db: AsyncSession = Depends(get_db)):
-    """Admin duyệt thủ công booking online khi có ảnh minh chứng."""
-    res = await db.execute(select(Booking).where(Booking.id == booking_id))
-    booking = res.scalar_one_or_none()
-    if not booking:
-        raise HTTPException(status_code=404, detail="Booking không tồn tại")
-
-    booking.payment_status = PaymentStatus.FULLY_PAID
-    booking.status = BookingStatus.PAID
-    booking.expires_at = None
-
-    log = BookingLog(
-        booking_id=booking.id,
-        user_id=None,
-        action="AdminApprove",
-        details="Admin duyệt thủ công qua ảnh minh chứng"
-    )
-    db.add(log)
+@app.put("/api/v1/users/{user_id}")
+async def update_user(user_id: int, req: UserUpdateRequest, db: AsyncSession = Depends(get_db)):
+    from app.models import User as UserModel
+    result = await db.execute(select(UserModel).where(UserModel.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if req.name is not None: user.name = req.name
+    if req.email is not None: user.email = req.email
+    if req.phone is not None: user.phone = req.phone
+    if req.role is not None: user.role = req.role
+    if req.wallet_balance is not None: user.wallet_balance = req.wallet_balance
+    
     await db.commit()
     return {"ok": True}
 
+@app.delete("/api/v1/users/{user_id}")
+async def delete_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    from app.models import User as UserModel
+    result = await db.execute(select(UserModel).where(UserModel.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.delete(user)
+    await db.commit()
+    return {"ok": True}
 
-@app.get("/api/v1/webhook-logs")
-async def get_webhook_logs(limit: int = Query(50), db: AsyncSession = Depends(get_db)):
-    """Admin: xem lịch sử webhook."""
-    res = await db.execute(
-        select(WebhookLog).order_by(WebhookLog.timestamp.desc()).limit(limit)
+@app.post("/api/v1/users/{user_id}/topup")
+async def topup_wallet(user_id: int, amount: float = Query(...), db: AsyncSession = Depends(get_db)):
+    """Nạp tiền vào ví khách hàng"""
+    from app.models import User as UserModel
+    result = await db.execute(select(UserModel).where(UserModel.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    user.wallet_balance = (user.wallet_balance or 0) + amount
+    
+    # Create transaction record
+    from app.models import Transaction, TransactionType
+    new_tx = Transaction(
+        user_id=user_id,
+        amount=amount,
+        type=TransactionType.TOP_UP,
+        status="Completed"
     )
-    logs = res.scalars().all()
+    db.add(new_tx)
+    
+    await db.commit()
+    return {"ok": True, "new_balance": user.wallet_balance}
+
+@app.post("/api/v1/users/{user_id}/topup-request")
+async def topup_request(user_id: int, req: TopUpRequest, db: AsyncSession = Depends(get_db)):
+    """Khách gửi yêu cầu nạp tiền kèm minh chứng"""
+    from app.models import Transaction, TransactionType
+    new_tx = Transaction(
+        user_id=user_id,
+        amount=req.amount,
+        type=TransactionType.TOP_UP,
+        status="Pending",
+        proof_url=req.proof_url,
+        note=req.note or "Yêu cầu nạp tiền từ người dùng"
+    )
+    db.add(new_tx)
+    await db.commit()
+    return {"ok": True, "tx_id": new_tx.id}
+
+@app.get("/api/v1/admin/topup-requests")
+async def get_pending_topups(db: AsyncSession = Depends(get_db)):
+    """Lấy danh sách yêu cầu nạp tiền chờ duyệt"""
+    from app.models import Transaction, User as UserModel
+    result = await db.execute(
+        select(Transaction, UserModel.name, UserModel.email)
+        .join(UserModel, Transaction.user_id == UserModel.id)
+        .where(Transaction.status == "Pending")
+        .order_by(Transaction.timestamp.desc())
+    )
+    rows = result.all()
     return [
         {
-            "id": l.id,
-            "source": l.source,
-            "payment_ref": l.payment_ref,
-            "amount": l.amount,
-            "booking_id": l.booking_id,
-            "matched": l.matched,
-            "timestamp": l.timestamp.isoformat() if l.timestamp else None,
+            "id": t.id,
+            "user_id": t.user_id,
+            "user_name": name,
+            "user_email": email,
+            "amount": t.amount,
+            "proof_url": t.proof_url,
+            "note": t.note,
+            "timestamp": t.timestamp.isoformat() + "Z"
         }
-        for l in logs
+        for t, name, email in rows
     ]
+
+@app.post("/api/v1/admin/topup-requests/{tx_id}/approve")
+async def approve_topup(tx_id: int, db: AsyncSession = Depends(get_db)):
+    """Duyệt nạp tiền"""
+    from app.models import Transaction, User as UserModel
+    result = await db.execute(select(Transaction).where(Transaction.id == tx_id))
+    tx = result.scalar_one_or_none()
+    if not tx or tx.status != "Pending":
+        raise HTTPException(status_code=404, detail="Request not found or already processed")
+    
+    # Update user balance
+    res_u = await db.execute(select(UserModel).where(UserModel.id == tx.user_id))
+    user = res_u.scalar_one_or_none()
+    if user:
+        user.wallet_balance = (user.wallet_balance or 0) + tx.amount
+        tx.status = "Completed"
+        await db.commit()
+        return {"ok": True, "new_balance": user.wallet_balance}
+    
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.post("/api/v1/admin/topup-requests/{tx_id}/reject")
+async def reject_topup(tx_id: int, db: AsyncSession = Depends(get_db)):
+    """Từ chối nạp tiền"""
+    from app.models import Transaction
+    result = await db.execute(select(Transaction).where(Transaction.id == tx_id))
+    tx = result.scalar_one_or_none()
+    if not tx or tx.status != "Pending":
+        raise HTTPException(status_code=404, detail="Request not found or already processed")
+    
+    tx.status = "Failed"
+    await db.commit()
+    return {"ok": True}
+
+# ===========================
+# MATCHMAKING & NOTIFICATIONS
+# ===========================
+@app.post("/api/v1/matches", response_model=MatchResponse)
+async def create_match(req: MatchCreate, db: AsyncSession = Depends(get_db)):
+    res_u = await db.execute(select(UserModel).where(UserModel.id == req.author_id))
+    author = res_u.scalar_one_or_none()
+    if not author:
+        raise HTTPException(status_code=404, detail="Author not found")
+
+    new_match = Match(
+        author_id=req.author_id,
+        sport=req.sport,
+        level=req.level,
+        time=req.time.replace(tzinfo=None),
+        courts=req.courts,
+        max_slots=req.max_slots,
+        status=MatchStatus.OPEN
+    )
+    db.add(new_match)
+    await db.commit()
+    await db.refresh(new_match)
+
+    # Add author as first participant
+    participant = MatchParticipant(match_id=new_match.id, user_id=req.author_id)
+    db.add(participant)
+    await db.commit()
+
+    return MatchResponse(
+        id=new_match.id,
+        author_id=author.id,
+        author_name=author.name,
+        sport=new_match.sport,
+        level=new_match.level,
+        time=new_match.time,
+        courts=new_match.courts,
+        max_slots=new_match.max_slots,
+        current_slots=1,
+        status=new_match.status.value,
+        participants=[author.name]
+    )
+
+@app.get("/api/v1/matches", response_model=List[MatchResponse])
+async def get_matches(db: AsyncSession = Depends(get_db)):
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    
+    # Auto delete expired matches (tự động xóa khi hết giờ)
+    from sqlalchemy import delete
+    await db.execute(delete(Match).where(Match.time <= now_vn))
+    await db.commit()
+
+    # Lấy các trận đấu OPEN
+    res = await db.execute(
+        select(Match).options(
+            selectinload(Match.author),
+            selectinload(Match.participants).selectinload(MatchParticipant.user)
+        ).where(
+            Match.status == MatchStatus.OPEN
+        ).order_by(Match.time.asc())
+    )
+    matches = res.scalars().all()
+    
+    result = []
+    for m in matches:
+        part_names = [p.user.name for p in m.participants if p.user]
+        result.append(MatchResponse(
+            id=m.id,
+            author_id=m.author_id,
+            author_name=m.author.name if m.author else "Unknown",
+            sport=m.sport,
+            level=m.level,
+            time=m.time,
+            courts=m.courts,
+            max_slots=m.max_slots,
+            current_slots=len(m.participants),
+            status=m.status.value,
+            participants=part_names
+        ))
+    return result
+
+@app.post("/api/v1/matches/{match_id}/join")
+async def join_match(match_id: int, req: MatchJoinRequest, db: AsyncSession = Depends(get_db)):
+    # 1. Kiểm tra trận đấu
+    res_m = await db.execute(select(Match).options(selectinload(Match.participants)).where(Match.id == match_id))
+    match = res_m.scalar_one_or_none()
+    if not match or match.status != MatchStatus.OPEN:
+        raise HTTPException(status_code=400, detail="Match not available")
+        
+    if len(match.participants) >= match.max_slots:
+        raise HTTPException(status_code=400, detail="Match is full")
+        
+    # 2. Kiểm tra người gửi yêu cầu
+    res_u = await db.execute(select(UserModel).where(UserModel.id == req.requester_id))
+    requester = res_u.scalar_one_or_none()
+    if not requester:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    # Đã tham gia chưa?
+    if any(p.user_id == req.requester_id for p in match.participants):
+        raise HTTPException(status_code=400, detail="You already joined this match")
+        
+    # Đã gửi yêu cầu chưa?
+    res_req = await db.execute(select(MatchRequest).where(
+        MatchRequest.match_id == match_id,
+        MatchRequest.requester_id == req.requester_id,
+        MatchRequest.status == MatchRequestStatus.PENDING
+    ))
+    if res_req.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Request already sent")
+        
+    # Tạo request
+    join_req = MatchRequest(match_id=match_id, requester_id=req.requester_id, status=MatchRequestStatus.PENDING)
+    db.add(join_req)
+    await db.commit()
+    await db.refresh(join_req)
+    
+    # Tạo notification cho người tạo trận
+    notif = Notification(
+        user_id=match.author_id,
+        title="Yêu cầu tham gia trận đấu",
+        message=f"{requester.name} muốn tham gia trận {match.sport} của bạn vào lúc {match.time.strftime('%H:%M %d/%m/%Y')}",
+        match_request_id=join_req.id
+    )
+    db.add(notif)
+    await db.commit()
+    
+    return {"ok": True, "message": "Request sent"}
+
+@app.post("/api/v1/match-requests/{request_id}/approve")
+async def approve_match_request(request_id: int, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(MatchRequest).options(selectinload(MatchRequest.match)).where(MatchRequest.id == request_id))
+    req = res.scalar_one_or_none()
+    
+    if not req or req.status != MatchRequestStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Invalid request")
+        
+    match = req.match
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found")
+        
+    # Kiểm tra slot
+    res_parts = await db.execute(select(MatchParticipant).where(MatchParticipant.match_id == match.id))
+    parts = res_parts.scalars().all()
+    if len(parts) >= match.max_slots:
+        raise HTTPException(status_code=400, detail="Match is full")
+        
+    # Approve
+    req.status = MatchRequestStatus.APPROVED
+    
+    # Add participant
+    part = MatchParticipant(match_id=match.id, user_id=req.requester_id)
+    db.add(part)
+    
+    # Tạo notification cho requester
+    notif = Notification(
+        user_id=req.requester_id,
+        title="Yêu cầu được chấp nhận",
+        message=f"Yêu cầu tham gia trận {match.sport} vào lúc {match.time.strftime('%H:%M %d/%m/%Y')} đã được chủ phòng chấp nhận!",
+        match_request_id=req.id
+    )
+    db.add(notif)
+    
+    await db.commit()
+    return {"ok": True}
+
+@app.post("/api/v1/match-requests/{request_id}/reject")
+async def reject_match_request(request_id: int, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(MatchRequest).options(selectinload(MatchRequest.match)).where(MatchRequest.id == request_id))
+    req = res.scalar_one_or_none()
+    
+    if not req or req.status != MatchRequestStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Invalid request")
+        
+    match = req.match
+    
+    # Reject
+    req.status = MatchRequestStatus.REJECTED
+    
+    # Tạo notification cho requester
+    if match:
+        notif = Notification(
+            user_id=req.requester_id,
+            title="Yêu cầu bị từ chối",
+            message=f"Chủ phòng đã từ chối yêu cầu tham gia trận {match.sport} vào lúc {match.time.strftime('%H:%M %d/%m/%Y')} của bạn.",
+            match_request_id=req.id
+        )
+        db.add(notif)
+    
+    await db.commit()
+    return {"ok": True}
+
+@app.get("/api/v1/notifications/{user_id}", response_model=List[NotificationResponse])
+async def get_notifications(user_id: int, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(
+        select(Notification)
+        .where(Notification.user_id == user_id)
+        .order_by(Notification.created_at.desc())
+    )
+    return res.scalars().all()
+
+@app.put("/api/v1/notifications/{notif_id}/read")
+async def read_notification(notif_id: int, db: AsyncSession = Depends(get_db)):
+    res = await db.execute(select(Notification).where(Notification.id == notif_id))
+    notif = res.scalar_one_or_none()
+    if notif:
+        notif.is_read = True
+        await db.commit()
+    return {"ok": True}
+
+@app.post("/api/v1/matches/{match_id}/leave")
+async def leave_match(match_id: int, req: MatchJoinRequest, db: AsyncSession = Depends(get_db)):
+    res_m = await db.execute(select(Match).where(Match.id == match_id))
+    match = res_m.scalar_one_or_none()
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found")
+        
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    time_diff = match.time - now_vn
+    if time_diff.total_seconds() < 3600 and time_diff.total_seconds() > 0:
+        raise HTTPException(status_code=400, detail="Không thể rời phòng khi trận đấu sẽ bắt đầu trong vòng 1 tiếng tới.")
+        
+    if match.author_id == req.requester_id:
+        raise HTTPException(status_code=400, detail="Chủ phòng không thể rời trận (bạn chỉ có thể hủy trận).")
+        
+    res_p = await db.execute(select(MatchParticipant).where(MatchParticipant.match_id == match_id, MatchParticipant.user_id == req.requester_id))
+    part = res_p.scalar_one_or_none()
+    if not part:
+        raise HTTPException(status_code=400, detail="Bạn chưa tham gia trận này.")
+        
+    await db.delete(part)
+    
+    # Notify author
+    res_u = await db.execute(select(UserModel).where(UserModel.id == req.requester_id))
+    user = res_u.scalar_one_or_none()
+    user_name = user.name if user else "Một người"
+    
+    notif = Notification(
+        user_id=match.author_id,
+        title="Người chơi rời phòng",
+        message=f"{user_name} đã rời khỏi trận {match.sport} của bạn vào lúc {match.time.strftime('%H:%M %d/%m/%Y')}",
+    )
+    db.add(notif)
+    
+    await db.commit()
+    return {"ok": True}
+
+@app.delete("/api/v1/matches/{match_id}")
+async def cancel_match(match_id: int, user_id: int = Query(...), db: AsyncSession = Depends(get_db)):
+    res_m = await db.execute(select(Match).options(selectinload(Match.participants)).where(Match.id == match_id))
+    match = res_m.scalar_one_or_none()
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found")
+        
+    if match.author_id != user_id:
+        raise HTTPException(status_code=403, detail="Chỉ chủ phòng mới có thể hủy trận.")
+        
+    # Notify participants
+    for p in match.participants:
+        if p.user_id != user_id:
+            notif = Notification(
+                user_id=p.user_id,
+                title="Trận đấu bị hủy",
+                message=f"Chủ phòng đã hủy trận {match.sport} vào lúc {match.time.strftime('%H:%M %d/%m/%Y')}",
+            )
+            db.add(notif)
+            
+    await db.delete(match)
+    await db.commit()
+    return {"ok": True}
+

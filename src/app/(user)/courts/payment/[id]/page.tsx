@@ -80,18 +80,22 @@ export default function PaymentPage() {
         try {
             const data = await api.onlineBookings.getById(bookingId);
             setBooking(data);
-            const ps = (data.payment_status || '').replace('PaymentStatus.', '');
-            if (ps === 'Fully_Paid' || data.status === 'Paid') {
+            
+            // OnlineBooking status values: 'holding' | 'confirmed' | 'cancelled'
+            if (data.status === 'confirmed') {
                 setPageState('paid');
                 clearPolling();
-            } else if (data.is_expired || data.is_deleted) {
+            } else if (data.is_expired || data.status === 'cancelled') {
                 setPageState('expired');
                 clearPolling();
-            } else if (ps === 'Deposit') {
-                // Có ảnh minh chứng, đang chờ
+            } else if (data.proof_url) {
+                // Đã gửi ảnh minh chứng, đang chờ duyệt
                 setPageState('waiting');
             } else {
                 setPageState('paying');
+                if (data.seconds_left !== undefined) {
+                    setSecondsLeft(data.seconds_left);
+                }
             }
             return data;
         } catch {
@@ -112,11 +116,8 @@ export default function PaymentPage() {
                 api.bank.get().catch(() => null),
             ]);
             setBankSettings(bank);
-            if (data && data.expires_at) {
-                const exp = new Date(data.expires_at).getTime();
-                const nowMs = Date.now();
-                const remaining = Math.max(0, Math.round((exp - nowMs) / 1000));
-                setSecondsLeft(remaining);
+            if (data && data.seconds_left !== undefined) {
+                setSecondsLeft(data.seconds_left);
             }
         };
         init();

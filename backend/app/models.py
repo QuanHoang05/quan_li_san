@@ -17,6 +17,7 @@ class CourtType(str, enum.Enum):
     BADMINTON = "Badminton"
     PICKLEBALL = "Pickleball"
     TENNIS = "Tennis"
+    FOOTBALL = "Bóng đá"
 
 class PaymentStatus(str, enum.Enum):
     UNPAID = "Unpaid"
@@ -63,6 +64,16 @@ class LogReason(str, enum.Enum):
     NATURAL_DAMAGE = "NATURAL_DAMAGE"
     CUSTOMER_DAMAGE = "CUSTOMER_DAMAGE"
     STOCK_IN = "STOCK_IN"
+
+class MatchStatus(str, enum.Enum):
+    OPEN = "Open"
+    CLOSED = "Closed"
+    CANCELLED = "Cancelled"
+
+class MatchRequestStatus(str, enum.Enum):
+    PENDING = "Pending"
+    APPROVED = "Approved"
+    REJECTED = "Rejected"
 
 # Vietnamese display labels for each reason
 LOG_REASON_LABELS = {
@@ -154,12 +165,6 @@ class Booking(Base):
     payment_status = Column(Enum(PaymentStatus, native_enum=False, length=50), default=PaymentStatus.UNPAID)
     note = Column(String(500), nullable=True)
     is_deleted = Column(Boolean, default=False)
-    # --- Online Booking Fields ---
-    expires_at = Column(DateTime, nullable=True)          # Thời hạn giữ chỗ (15 phút)
-    payment_ref = Column(String(50), nullable=True, index=True)  # Mã nội dung CK duy nhất
-    proof_image_url = Column(String(255), nullable=True)  # Ảnh minh chứng của khách
-    is_online = Column(Boolean, default=False)            # True = đặt từ web/app khách
-    price = Column(Float, nullable=True)                  # Giá của ca này
 
     user = relationship("User", back_populates="bookings")
     court = relationship("Court", back_populates="bookings")
@@ -232,19 +237,38 @@ class BankSettings(Base):
     is_active = Column(Boolean, default=True)
 
 
+class OnlineBooking(Base):
+    """Đặt sân online từ trang khách hàng (/courts)."""
+    __tablename__ = "online_bookings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    court_id = Column(Integer, ForeignKey("courts.id"), nullable=False)
+    date = Column(String(10), nullable=False)            # YYYY-MM-DD
+    shift_ids = Column(String(200), nullable=False)      # JSON array stored as string e.g. "[1,2,3]"
+    guest_name = Column(String(100), nullable=False)
+    guest_phone = Column(String(20), nullable=False)
+    note = Column(String(500), nullable=True)
+    total_amount = Column(Float, default=0.0)
+    payment_ref = Column(String(100), nullable=True, unique=True, index=True)  # Mã chuyển khoản
+    status = Column(String(30), default="holding")  # holding | confirmed | cancelled
+    proof_url = Column(String(500), nullable=True)   # URL ảnh biên lai
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=True)     # Thời hạn giữ chỗ (15 phút)
+
+    court = relationship("Court")
+
+
 class WebhookLog(Base):
-    """Lịch sử callback webhook từ Casso/SePay."""
+    """Lưu lịch sử nhận webhook từ Casso/SePay."""
     __tablename__ = "webhook_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    source = Column(String(50), nullable=False, default="casso")  # 'casso' | 'sepay' | 'manual'
-    payment_ref = Column(String(100), nullable=True)  # Nội dung CK được match
-    amount = Column(Float, nullable=True)             # Số tiền nhận được
-    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="SET NULL"), nullable=True)
-    matched = Column(Boolean, default=False)          # True nếu match thành công
-    raw_data = Column(Text, nullable=True)            # JSON raw từ webhook
+    source = Column(String(50), default="casso")      # casso | sepay | test
+    payment_ref = Column(String(200), nullable=True)  # Nội dung chuyển khoản
+    amount = Column(Float, nullable=True)
+    matched = Column(Boolean, default=False)          # Có khớp với booking không
+    raw = Column(Text, nullable=True)                 # Raw payload JSON
     timestamp = Column(DateTime, default=datetime.utcnow)
-
 
 
 class Transaction(Base):
@@ -254,7 +278,9 @@ class Transaction(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     amount = Column(Float, nullable=False)
     type = Column(Enum(TransactionType, native_enum=False, length=50), nullable=False)
-    status = Column(String(50), default="Completed") # Completed/Failed
+    status = Column(String(50), default="Completed") # Pending | Completed | Failed
+    proof_url = Column(String(500), nullable=True)
+    note = Column(String(200), nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="transactions")
@@ -286,3 +312,61 @@ class ShiftSwapRequest(Base):
     requester = relationship("User", foreign_keys=[requester_id])
     receiver = relationship("User", foreign_keys=[receiver_id])
     shift = relationship("WorkShift", back_populates="swap_requests", foreign_keys=[shift_id])
+
+
+class Match(Base):
+    __tablename__ = "matches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    sport = Column(String(50), nullable=False)
+    level = Column(String(100), nullable=False)
+    time = Column(DateTime, nullable=False)
+    courts = Column(String(200), nullable=False)
+    max_slots = Column(Integer, default=4)
+    status = Column(Enum(MatchStatus, native_enum=False, length=50), default=MatchStatus.OPEN)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    author = relationship("User", foreign_keys=[author_id])
+    participants = relationship("MatchParticipant", back_populates="match", cascade="all, delete")
+    requests = relationship("MatchRequest", back_populates="match", cascade="all, delete")
+
+
+class MatchParticipant(Base):
+    __tablename__ = "match_participants"
+
+    id = Column(Integer, primary_key=True, index=True)
+    match_id = Column(Integer, ForeignKey("matches.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    joined_at = Column(DateTime, default=datetime.utcnow)
+
+    match = relationship("Match", back_populates="participants")
+    user = relationship("User")
+
+
+class MatchRequest(Base):
+    __tablename__ = "match_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    match_id = Column(Integer, ForeignKey("matches.id", ondelete="CASCADE"), nullable=False)
+    requester_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(Enum(MatchRequestStatus, native_enum=False, length=50), default=MatchRequestStatus.PENDING)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    match = relationship("Match", back_populates="requests")
+    requester = relationship("User")
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(100), nullable=False)
+    message = Column(String(500), nullable=False)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    match_request_id = Column(Integer, nullable=True)
+
+    user = relationship("User")
